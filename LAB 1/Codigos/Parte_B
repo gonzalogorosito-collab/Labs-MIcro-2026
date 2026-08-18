@@ -10,5 +10,20 @@ RESET:
     LDI  R16, HIGH(RAMEND)
     OUT  SPH, R16
 
+    ; --- Configuracion de puertos ---
+
+    ; Puerto B: PB0-PB5 = segmentos a,b,c,d,e,f (salidas)
+    LDI  R16, 0b00111111
+    OUT  DDRB, R16
+    LDI  R16, 0b00000000    ; segmentos apagados al inicio (catodo comun: 0 = apagado)
+    OUT  PORTB, R16
+
+    ; Puerto D: PD2 = segmento g (salida)
+    ;           PD3 = boton incrementar, PD4 = boton decrementar, PD5 = boton reset (entradas)
+    LDI  R16, 0b00000100
+    OUT  DDRD, R16
+    LDI  R16, 0b00111000    ; pull-up interno en PD3,PD4,PD5 ; PD2 (segmento g) en 0
+    OUT  PORTD, R16
+
 MAIN:
-    RJMP MAIN            ; Bucle infinito temporal - se completa en los proximos commits 
+    RJMP MAIN            ; Bucle infinito temporal - se completa en los proximos commits
