@@ -1,1 +1,14 @@
 .include "m328pdef.inc"
+
+.ORG 0x0000
+    RJMP RESET          ; Vector de reset, salta al inicio del programa
+
+RESET:
+    ; Configuracion del Stack Pointer
+    LDI  R16, LOW(RAMEND)
+    OUT  SPL, R16
+    LDI  R16, HIGH(RAMEND)
+    OUT  SPH, R16
+
+MAIN:
+    RJMP MAIN            ; Bucle infinito temporal - se completa en los proximos commits 
