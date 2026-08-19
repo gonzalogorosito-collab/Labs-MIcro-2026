@@ -1,3 +1,21 @@
+; Entradas:
+;   PD3 (D3) - Boton incrementar (activo en bajo, pull-up interno)
+;   PD4 (D4) - Boton decrementar (activo en bajo, pull-up interno)
+;   PD5 (D5) - Boton reset       (activo en bajo, pull-up interno)
+;
+; Salidas (display 7 segmentos, catodo comun, activo en alto):
+;   PB0 (D8)  - Segmento a
+;   PB1 (D9)  - Segmento b
+;   PB2 (D10) - Segmento c
+;   PB3 (D11) - Segmento d
+;   PB4 (D12) - Segmento e
+;   PB5 (D13) - Segmento f
+;   PD2 (D2)  - Segmento g
+;
+; Funcionamiento: contador de 0 a 9 con wrap en ambos extremos
+; (incrementar en 9 vuelve a 0, decrementar en 0 vuelve a 9).
+; Reset lleva el contador a 0 en cualquier momento.
+
 .include "m328pdef.inc"
 
 .ORG 0x0000
@@ -61,23 +79,35 @@ ESPERAR_SUELTE_INC:
 CHEQUEAR_DEC:
     CALL DELAY_DEBOUNCE
     SBIS PIND, PD4
-    RJMP MOSTRAR_2
+    RJMP MAIN
+
+    ; --- Decrementar contador con wrap 0 -> 9 ---
+    CPI  R23, 0
+    BRNE DECREMENTAR
+    LDI  R23, 10             ; truco: cargamos 10 para que el DEC de abajo lo deje en 9
+DECREMENTAR:
+    DEC  R23
+    MOV  R17, R23
+    CALL MOSTRAR_DIGITO
+
+ESPERAR_SUELTE_DEC:
+    SBIS PIND, PD4
+    RJMP ESPERAR_SUELTE_DEC
     RJMP MAIN
 
 CHEQUEAR_RST:
     CALL DELAY_DEBOUNCE
     SBIS PIND, PD5
-    RJMP MOSTRAR_0
     RJMP MAIN
 
-MOSTRAR_2:
-    LDI  R17, 2
+    ; --- Reiniciar contador a 0 ---
+    CLR  R23
+    MOV  R17, R23
     CALL MOSTRAR_DIGITO
-    RJMP MAIN
 
-MOSTRAR_0:
-    LDI  R17, 0
-    CALL MOSTRAR_DIGITO
+ESPERAR_SUELTE_RST:
+    SBIS PIND, PD5
+    RJMP ESPERAR_SUELTE_RST
     RJMP MAIN
 
 ; ---------------------------------------------------------
@@ -128,4 +158,4 @@ FIN_MOSTRAR:
 
 TABLA_7SEG:
     .DB 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
-    ;        0         1        2         3        4        5         6        7        8        9
+    ;         0        1        2         3         4        5        6         7        8       9
