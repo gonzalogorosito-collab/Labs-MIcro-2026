@@ -1,54 +1,128 @@
-.include "m328pdef.inc" 
+.include "m328pdef.inc"
 
 ; --- DEFINICIÓN DE REGISTROS ---
 .def TEMP    = r16    ; Registro temporal de trabajo
 .def STATE   = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
 .def LOAD    = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
-.def COUNTER = r19    ; Contador de ciclos o repeticiones
+.def COUNTER = r19    ; Contador auxiliar para ciclos de retardo
 
 ; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
-.equ P_INICIO = PD2   ; Pulsador de Inicio
-.equ P_CARGA  = PD3   ; Pulsador de Selección de Carga
-.equ S_PUERTA = PD4   ; Sensor de Puerta Cerrada (1 = Cerrada)
-.equ S_AGUA   = PD5   ; Sensor de Nivel de Agua (1 = Lleno)
+.equ P_INICIO = PD2   ; Pulsador de Inicio (Arduino Pin 2)
+.equ P_CARGA  = PD3   ; Pulsador de Selección de Carga (Arduino Pin 3)
+.equ S_PUERTA = PD4   ; Sensor de Puerta Cerrada (Arduino Pin 4, 1 = Cerrada)
+.equ S_AGUA   = PD5   ; Sensor de Nivel de Agua (Arduino Pin 5, 1 = Lleno)
 
-; --- VECTORES DE INTERRUPCIÓN Y MEMORIA DE CÓDIGO ---
+; --- VECTOR DE RESET ---
 .cseg
 .org 0x0000
     rjmp RESET
 
 RESET:
-    ; 1. Inicialización del Stack Pointer (Pila)
+    ; 1. Inicialización de la Pila (Stack Pointer)
     ldi TEMP, HIGH(RAMEND)
     out SPH, TEMP
     ldi TEMP, LOW(RAMEND)
     out SPL, TEMP
 
-    ; 2. Configuración de Puertos I/O
+    ; 2. Configuración de Direcciones I/O (DDR)
     clr TEMP
-    out DDRD, TEMP        ; PORTD completo como ENTRADAS (Sensores y Pulsadores)
+    out DDRD, TEMP        ; PORTD completo como ENTRADAS (PD2..PD5)
     
-    ldi TEMP, 0x1F        ; PB0 a PB4 como SALIDAS (LEDs de Estado)
+    ldi TEMP, 0x1F        ; PB0..PB4 como SALIDAS (LEDs de Estado: Pines 8-12)
     out DDRB, TEMP
     
-    ldi TEMP, 0x07        ; PC0 a PC2 como SALIDAS (LEDs de Carga)
+    ldi TEMP, 0x07        ; PC0..PC2 como SALIDAS (LEDs de Carga: Pines A0-A2)
     out DDRC, TEMP
 
-    ; 3. Inicialización de Variables de Estado
-    clr STATE             ; Arrancar en E0 (Listo)
+    ; 3. Inicialización de Variables
+    clr STATE             ; Arrancar en Estado E0 (Listo)
     clr LOAD              ; Arrancar en Carga Ligera (0)
 
-   ;Bucle principal Maquina de estados
+; ==============================================================================
+; BUCLE PRINCIPAL DE LA MÁQUINA DE ESTADOS (FSM)
+; ==============================================================================
+FSM_LOOP:
+    cpi STATE, 0
+    breq STATE_E0
+    cpi STATE, 1
+    breq STATE_E1
+    cpi STATE, 2
+    breq STATE_E2
+    cpi STATE, 3
+    breq STATE_E3
+    cpi STATE, 4
+    breq STATE_E4
+    rjmp FSM_LOOP
 
-   FMS_LOOP
-   cpi STATE, 0 
-   breq STATE_E0
-   cpi STATE, 1
-   breq STATE_E1
-   cpi STATE, 2
-   breq STATE_E2
-   cpi STATE, 3
-   breq STATE_E3
-   cpi STATE, 4
-   breq STATE_4
-   rjmp FMS_LOOP
+; ------------------------------------------------------------------------------
+; E0: ESTADO LISTO
+; Salida: LED_Listo (PB0 / Pin 8) ON. Selección de carga mediante PORTC.
+; ------------------------------------------------------------------------------
+STATE_E0:
+    ldi TEMP, (1<<PB0)
+    out PORTB, TEMP       ; Activa únicamente el LED de Estado Listo
+    rcall UPDATE_LOAD_LEDS; Refresca el indicador LED del nivel de carga actual
+
+    ; Verificar pulsador de cambio de carga (PD3)
+    sbic PIND, P_CARGA
+    rcall CHANGE_LOAD
+
+    ; Evaluación de transición a E1: Requiere P_INICIO (PD2)=1 Y S_PUERTA (PD4)=1
+    sbis PIND, P_INICIO
+    rjmp FSM_LOOP
+    sbis PIND, S_PUERTA
+    rjmp FSM_LOOP
+    
+    inc STATE              ; Avanzar a E1 (Lavado)
+    rjmp FSM_LOOP
+
+
+STATE_E1:
+    ldi TEMP, (1<<PB1)     ; Enciende LED Lavado (Pin 9) para confirmar la transición
+    out PORTB, TEMP
+PARADA_E1:
+    rjmp PARADA_E1         ; Detiene la ejecución aquí al salir de E0
+
+STATE_E2:
+STATE_E3:
+STATE_E4:
+    rjmp FSM_LOOP
+
+
+CHANGE_LOAD:
+    rcall DELAY_DEBOUNCE
+    inc LOAD
+    cpi LOAD, 3
+    brne END_CHANGE
+    clr LOAD
+END_CHANGE:
+    ret
+
+UPDATE_LOAD_LEDS:
+    cpi LOAD, 0
+    breq LED_LIGHT
+    cpi LOAD, 1
+    breq LED_MEDIUM
+    
+    ldi TEMP, (1<<PC2)     ; Carga Pesada (A2)
+    out PORTC, TEMP
+    ret
+
+LED_LIGHT:
+    ldi TEMP, (1<<PC0)     ; Carga Ligera (A0)
+    out PORTC, TEMP
+    ret
+
+LED_MEDIUM:
+    ldi TEMP, (1<<PC1)     ; Carga Media (A1)
+    out PORTC, TEMP
+    ret
+
+DELAY_DEBOUNCE:
+    ldi r20, 2
+    ldi r21, 150
+L2: dec r21
+    brne L2
+    dec r20
+    brne L2
+    ret
