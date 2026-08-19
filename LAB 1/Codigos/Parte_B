@@ -4,6 +4,8 @@
     RJMP RESET          ; Vector de reset, salta al inicio del programa
 
 RESET:
+    CLR  R1              ; Registro auxiliar en cero, usado para propagar acarreo en LPM
+
     ; Configuracion del Stack Pointer
     LDI  R16, LOW(RAMEND)
     OUT  SPL, R16
@@ -11,7 +13,6 @@ RESET:
     OUT  SPH, R16
 
     ; --- Configuracion de puertos ---
-
     ; Puerto B: PB0-PB5 = segmentos a,b,c,d,e,f (salidas)
     LDI  R16, 0b00111111
     OUT  DDRB, R16
@@ -23,9 +24,38 @@ RESET:
     LDI  R16, 0b00111000    ; pull-up interno en PD3,PD4,PD5 ; PD2 (segmento g) en 0 (apagado)
     OUT  PORTD, R16
 
-    ; --- Prueba: mostrar el digito "0" fijo ---
-    LDI  R16, 0b00111111
-    OUT  PORTB, R16
+    ; --- Prueba: mostrar el digito 5 usando la tabla de conversion ---
+    LDI  R17, 5
+    CALL MOSTRAR_DIGITO
 
 MAIN:
     RJMP MAIN            ; Bucle infinito temporal - se completa en los proximos commits
+
+; ---------------------------------------------------------
+; Subrutina MOSTRAR_DIGITO
+; Entrada: R17 = digito a mostrar (0-9)
+; Busca el patron en TABLA_7SEG y lo escribe en PORTB (a-f) y PD2 (g)
+; ---------------------------------------------------------
+MOSTRAR_DIGITO:
+    LDI  ZH, HIGH(TABLA_7SEG*2)
+    LDI  ZL, LOW(TABLA_7SEG*2)
+    ADD  ZL, R17
+    ADC  ZH, R1
+    LPM  R18, Z          ; R18 = patron completo (bit6=g, bits0-5=a-f)
+
+    MOV  R19, R18
+    ANDI R19, 0b00111111 ; nos quedamos solo con los bits de a-f
+    OUT  PORTB, R19
+
+    SBRC R18, 6           ; si el bit 6 (g) es 0, salta la siguiente instruccion
+    RJMP G_ON
+    CBI  PORTD, PD2       ; g apagado
+    RJMP FIN_MOSTRAR
+G_ON:
+    SBI  PORTD, PD2       ; g encendido
+FIN_MOSTRAR:
+    RET
+
+TABLA_7SEG:
+    .DB 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
+	;    0     1     2     3     4     5     6     7     8     9
