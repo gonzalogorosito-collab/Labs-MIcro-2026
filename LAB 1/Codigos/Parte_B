@@ -5,6 +5,7 @@
 
 RESET:
     CLR  R1              ; Registro auxiliar en cero, usado para propagar acarreo en LPM
+    CLR  R23              ; Contador del display, arranca en 0
 
     ; Configuracion del Stack Pointer
     LDI  R16, LOW(RAMEND)
@@ -24,6 +25,10 @@ RESET:
     LDI  R16, 0b00111000    ; pull-up interno en PD3,PD4,PD5 ; PD2 (segmento g) en 0 (apagado)
     OUT  PORTD, R16
 
+    ; --- Mostrar el contador inicial (0) apenas arranca ---
+    MOV  R17, R23
+    CALL MOSTRAR_DIGITO
+
 MAIN:
     ; --- Lectura de los 3 pulsadores con antirrebote ---
     SBIS PIND, PD3          ; boton incrementar presionado? (activo en bajo)
@@ -37,8 +42,21 @@ MAIN:
 CHEQUEAR_INC:
     CALL DELAY_DEBOUNCE     ; esperamos a que termine el rebote mecanico
     SBIS PIND, PD3          ; confirmamos que sigue presionado
-    RJMP MOSTRAR_1
     RJMP MAIN                ; se solto durante la espera: fue rebote, se ignora
+
+    ; --- Incrementar contador con wrap 9 -> 0 ---
+    INC  R23
+    CPI  R23, 10
+    BRNE SIN_WRAP_INC
+    CLR  R23
+SIN_WRAP_INC:
+    MOV  R17, R23
+    CALL MOSTRAR_DIGITO
+
+ESPERAR_SUELTE_INC:
+    SBIS PIND, PD3           ; espera a que se suelte el boton antes de seguir
+    RJMP ESPERAR_SUELTE_INC
+    RJMP MAIN
 
 CHEQUEAR_DEC:
     CALL DELAY_DEBOUNCE
@@ -50,11 +68,6 @@ CHEQUEAR_RST:
     CALL DELAY_DEBOUNCE
     SBIS PIND, PD5
     RJMP MOSTRAR_0
-    RJMP MAIN
-
-MOSTRAR_1:
-    LDI  R17, 1
-    CALL MOSTRAR_DIGITO
     RJMP MAIN
 
 MOSTRAR_2:
@@ -115,4 +128,4 @@ FIN_MOSTRAR:
 
 TABLA_7SEG:
     .DB 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
-    ;         0     1     2     3     4     5     6     7     8     9
+    ;        0         1        2         3        4        5         6        7        8        9
