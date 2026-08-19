@@ -24,12 +24,30 @@ RESET:
     LDI  R16, 0b00111000    ; pull-up interno en PD3,PD4,PD5 ; PD2 (segmento g) en 0 (apagado)
     OUT  PORTD, R16
 
-    ; --- Prueba: mostrar el digito 5 usando la tabla de conversion ---
-    LDI  R17, 5
-    CALL MOSTRAR_DIGITO
-
 MAIN:
-    RJMP MAIN            ; Bucle infinito temporal - se completa en los proximos commits
+    ; --- Prueba: lectura basica de los 3 pulsadores (sin antirrebote) ---
+    SBIS PIND, PD3        ; boton incrementar presionado? (activo en bajo)
+    RJMP MOSTRAR_1
+    SBIS PIND, PD4        ; boton decrementar presionado?
+    RJMP MOSTRAR_2
+    SBIS PIND, PD5        ; boton reset presionado?
+    RJMP MOSTRAR_0
+    RJMP MAIN
+
+MOSTRAR_1:
+    LDI  R17, 1
+    CALL MOSTRAR_DIGITO
+    RJMP MAIN
+
+MOSTRAR_2:
+    LDI  R17, 2
+    CALL MOSTRAR_DIGITO
+    RJMP MAIN
+
+MOSTRAR_0:
+    LDI  R17, 0
+    CALL MOSTRAR_DIGITO
+    RJMP MAIN
 
 ; ---------------------------------------------------------
 ; Subrutina MOSTRAR_DIGITO
@@ -58,4 +76,4 @@ FIN_MOSTRAR:
 
 TABLA_7SEG:
     .DB 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
-	;    0     1     2     3     4     5     6     7     8     9
+    ; digitos:  0     1     2     3     4     5     6     7     8     9
