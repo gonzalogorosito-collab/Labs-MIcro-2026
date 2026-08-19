@@ -1,1 +1,54 @@
-.include "m328pdef.inc"
+.include "m328pdef.inc" 
+
+; --- DEFINICIÓN DE REGISTROS ---
+.def TEMP    = r16    ; Registro temporal de trabajo
+.def STATE   = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
+.def LOAD    = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
+.def COUNTER = r19    ; Contador de ciclos o repeticiones
+
+; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
+.equ P_INICIO = PD2   ; Pulsador de Inicio
+.equ P_CARGA  = PD3   ; Pulsador de Selección de Carga
+.equ S_PUERTA = PD4   ; Sensor de Puerta Cerrada (1 = Cerrada)
+.equ S_AGUA   = PD5   ; Sensor de Nivel de Agua (1 = Lleno)
+
+; --- VECTORES DE INTERRUPCIÓN Y MEMORIA DE CÓDIGO ---
+.cseg
+.org 0x0000
+    rjmp RESET
+
+RESET:
+    ; 1. Inicialización del Stack Pointer (Pila)
+    ldi TEMP, HIGH(RAMEND)
+    out SPH, TEMP
+    ldi TEMP, LOW(RAMEND)
+    out SPL, TEMP
+
+    ; 2. Configuración de Puertos I/O
+    clr TEMP
+    out DDRD, TEMP        ; PORTD completo como ENTRADAS (Sensores y Pulsadores)
+    
+    ldi TEMP, 0x1F        ; PB0 a PB4 como SALIDAS (LEDs de Estado)
+    out DDRB, TEMP
+    
+    ldi TEMP, 0x07        ; PC0 a PC2 como SALIDAS (LEDs de Carga)
+    out DDRC, TEMP
+
+    ; 3. Inicialización de Variables de Estado
+    clr STATE             ; Arrancar en E0 (Listo)
+    clr LOAD              ; Arrancar en Carga Ligera (0)
+
+   ;Bucle principal Maquina de estados
+
+   FMS_LOOP
+   cpi STATE, 0 
+   breq STATE_E0
+   cpi STATE, 1
+   breq STATE_E1
+   cpi STATE, 2
+   breq STATE_E2
+   cpi STATE, 3
+   breq STATE_E3
+   cpi STATE, 4
+   breq STATE_4
+   rjmp FMS_LOOP
