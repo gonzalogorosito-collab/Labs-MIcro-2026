@@ -25,12 +25,30 @@ RESET:
     OUT  PORTD, R16
 
 MAIN:
-    ; --- Prueba: lectura basica de los 3 pulsadores (sin antirrebote) ---
-    SBIS PIND, PD3        ; boton incrementar presionado? (activo en bajo)
+    ; --- Lectura de los 3 pulsadores con antirrebote ---
+    SBIS PIND, PD3          ; boton incrementar presionado? (activo en bajo)
+    RJMP CHEQUEAR_INC
+    SBIS PIND, PD4
+    RJMP CHEQUEAR_DEC
+    SBIS PIND, PD5
+    RJMP CHEQUEAR_RST
+    RJMP MAIN
+
+CHEQUEAR_INC:
+    CALL DELAY_DEBOUNCE     ; esperamos a que termine el rebote mecanico
+    SBIS PIND, PD3          ; confirmamos que sigue presionado
     RJMP MOSTRAR_1
-    SBIS PIND, PD4        ; boton decrementar presionado?
+    RJMP MAIN                ; se solto durante la espera: fue rebote, se ignora
+
+CHEQUEAR_DEC:
+    CALL DELAY_DEBOUNCE
+    SBIS PIND, PD4
     RJMP MOSTRAR_2
-    SBIS PIND, PD5        ; boton reset presionado?
+    RJMP MAIN
+
+CHEQUEAR_RST:
+    CALL DELAY_DEBOUNCE
+    SBIS PIND, PD5
     RJMP MOSTRAR_0
     RJMP MAIN
 
@@ -48,6 +66,27 @@ MOSTRAR_0:
     LDI  R17, 0
     CALL MOSTRAR_DIGITO
     RJMP MAIN
+
+; ---------------------------------------------------------
+; Subrutina DELAY_DEBOUNCE
+; Retardo por software de aproximadamente 24ms a 16MHz,
+; usado para esperar a que se estabilice el rebote mecanico
+; de los pulsadores antes de confirmar una pulsacion.
+; ---------------------------------------------------------
+DELAY_DEBOUNCE:
+    LDI  R22, 2
+REP_EXT:
+    LDI  R20, 255
+D_EXT:
+    LDI  R21, 250
+D_INT:
+    DEC  R21
+    BRNE D_INT
+    DEC  R20
+    BRNE D_EXT
+    DEC  R22
+    BRNE REP_EXT
+    RET
 
 ; ---------------------------------------------------------
 ; Subrutina MOSTRAR_DIGITO
@@ -76,4 +115,4 @@ FIN_MOSTRAR:
 
 TABLA_7SEG:
     .DB 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
-    ; digitos:  0     1     2     3     4     5     6     7     8     9
+    ;         0     1     2     3     4     5     6     7     8     9
