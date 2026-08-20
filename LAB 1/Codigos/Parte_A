@@ -38,9 +38,7 @@ RESET:
     clr STATE             ; Arrancar en Estado E0 (Listo)
     clr LOAD              ; Arrancar en Carga Ligera (0)
 
-; ==============================================================================
 ; BUCLE PRINCIPAL DE LA MÁQUINA DE ESTADOS (FSM)
-; ==============================================================================
 FSM_LOOP:
     cpi STATE, 0
     breq STATE_E0
@@ -54,10 +52,8 @@ FSM_LOOP:
     breq STATE_E4
     rjmp FSM_LOOP
 
-; ------------------------------------------------------------------------------
 ; E0: ESTADO LISTO
 ; Salida: LED_Listo (PB0 / Pin 8) ON. Selección de carga mediante PORTC.
-; ------------------------------------------------------------------------------
 STATE_E0:
     ldi TEMP, (1<<PB0)
     out PORTB, TEMP       ; Activa únicamente el LED de Estado Listo
@@ -76,19 +72,48 @@ STATE_E0:
     inc STATE              ; Avanzar a E1 (Lavado)
     rjmp FSM_LOOP
 
-
+; --- E1: LAVADO ---
 STATE_E1:
-    ldi TEMP, (1<<PB1)     ; Enciende LED Lavado (Pin 9) para confirmar la transición
+    ldi TEMP, (1<<PB1)     ; Enciende LED Lavado (Pin 9)
     out PORTB, TEMP
-PARADA_E1:
-    rjmp PARADA_E1         ; Detiene la ejecución aquí al salir de E0
-
-STATE_E2:
-STATE_E3:
-STATE_E4:
+WAIT_WATER:
+    sbis PIND, S_AGUA
+    rjmp WAIT_WATER
+    ldi COUNTER, 5
+WASH_CYCLE: 
+    rcall DELAY_1S
+    dec COUNTER
+    brne WASH_CYCLE
+    inc STATE
     rjmp FSM_LOOP
 
+; --- E2: CENTRIFUGADO ---
+STATE_E2:
+    ldi TEMP, (1<<PB2)     ; Enciende LED Centrifugado (Pin 10)
+    out PORTB, TEMP
+    rcall DELAY_1S
+    inc STATE
+    rjmp FSM_LOOP
 
+; --- E3: SECADO ---
+STATE_E3:
+    ldi TEMP, (1<<PB3)     ; Enciende LED Secado (Pin 11)
+    out PORTB, TEMP
+    rcall DELAY_1S
+    inc STATE
+    rjmp FSM_LOOP
+
+; --- E4: FIN ---
+STATE_E4:
+    ldi TEMP, (1<<PB4)     ; Enciende LED Fin (Pin 12)
+    out PORTB, TEMP
+WAIT_DOOR_OPEN:
+    sbic PIND, S_PUERTA
+    rjmp WAIT_DOOR_OPEN
+    clr STATE              ; Reinicia a E0 al abrir la puerta
+    rjmp FSM_LOOP
+
+; SUBRUTINAS
 CHANGE_LOAD:
     rcall DELAY_DEBOUNCE
     inc LOAD
@@ -116,6 +141,18 @@ LED_LIGHT:
 LED_MEDIUM:
     ldi TEMP, (1<<PC1)     ; Carga Media (A1)
     out PORTC, TEMP
+    ret
+
+DELAY_1S:
+    ldi r20, 82
+    ldi r21, 43
+    ldi r22, 0
+L1: dec r22
+    brne L1
+    dec r21
+    brne L1
+    dec r20
+    brne L1
     ret
 
 DELAY_DEBOUNCE:
