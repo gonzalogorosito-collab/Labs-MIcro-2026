@@ -1,1 +1,29 @@
+; =====================================================================
+; PRÁCTICA C: Selección y ejecución de 8 secuencias de LEDs
+; =====================================================================
 .include "m328pdef.inc"
+; --- Definición de Registros ---
+.def TEMP        = R16  ; Registro de trabajo general
+; --- Vector de Reset ---
+.org 0x0000
+    rjmp RESET
+RESET:
+    ; 1. Inicializar el Stack Pointer
+    ldi TEMP, LOW(RAMEND)
+    out SPL, TEMP
+    ldi TEMP, HIGH(RAMEND)
+    out SPH, TEMP
+    ; 2. Configuración de Puertos E/S
+    ldi TEMP, 0xFF
+    out DDRD, TEMP      ; Puerto D como SALIDA (8 LEDs)
+    clr TEMP
+    out PORTD, TEMP     ; Inicializar LEDs apagados
+    clr TEMP
+    out DDRB, TEMP      ; PB0-PB2 como entradas
+    ldi TEMP, 0x07      ; Habilitar Pull-Up en PB0, PB1 y PB2
+    out PORTB, TEMP
+; =====================================================================
+; BUCLE PRINCIPAL (placeholder, todavía sin secuencias)
+; =====================================================================
+MAIN_LOOP:
+    rjmp MAIN_LOOP
