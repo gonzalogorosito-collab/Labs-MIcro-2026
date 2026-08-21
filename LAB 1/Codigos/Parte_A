@@ -5,6 +5,7 @@
 .def STATE   = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
 .def LOAD    = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
 .def COUNTER = r19    ; Contador auxiliar para ciclos de retardo
+.def SECONDS = r23    ; Registro para la duración dinámica de retardos
 
 ; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
 .equ P_INICIO = PD2   ; Pulsador de Inicio (Arduino Pin 2)
@@ -74,14 +75,28 @@ STATE_E0:
 
 ; --- E1: LAVADO ---
 STATE_E1:
-    ldi TEMP, (1<<PB1)     ; Enciende LED Lavado (Pin 9)
+    ldi TEMP, (1<<PB1)     ; Enciende INMEDIATAMENTE el LED Lavado (Pin 9)
     out PORTB, TEMP
 WAIT_WATER:
-    sbis PIND, S_AGUA
+    sbis PIND, S_AGUA      ; Espera a que el tanque esté lleno (PD5 = 1)
     rjmp WAIT_WATER
+
     ldi COUNTER, 5
 WASH_CYCLE: 
-    rcall DELAY_1S
+    ; 1. GIRO: Enciende LED Lavado y espera (2s + LOAD)
+    ldi TEMP, (1<<PB1)
+    out PORTB, TEMP
+    ldi SECONDS, 2
+    add SECONDS, LOAD
+    rcall DELAY_N_SEC
+
+    ; 2. PAUSA: Apaga el LED y espera (1s + LOAD) para visualizar el parpadeo
+    clr TEMP
+    out PORTB, TEMP
+    ldi SECONDS, 1
+    add SECONDS, LOAD
+    rcall DELAY_N_SEC
+
     dec COUNTER
     brne WASH_CYCLE
     inc STATE
@@ -91,7 +106,20 @@ WASH_CYCLE:
 STATE_E2:
     ldi TEMP, (1<<PB2)     ; Enciende LED Centrifugado (Pin 10)
     out PORTB, TEMP
-    rcall DELAY_1S
+    
+    ; Centrifugado dinámico (15s base + 3s por carga)
+    ldi SECONDS, 15
+    cpi LOAD, 0
+    breq RUN_SPIN
+    cpi LOAD, 1
+    brne SPIN_HEAVY
+    ldi SECONDS, 18
+    rjmp RUN_SPIN
+SPIN_HEAVY:
+    ldi SECONDS, 21
+RUN_SPIN:
+    rcall DELAY_N_SEC
+
     inc STATE
     rjmp FSM_LOOP
 
@@ -99,7 +127,26 @@ STATE_E2:
 STATE_E3:
     ldi TEMP, (1<<PB3)     ; Enciende LED Secado (Pin 11)
     out PORTB, TEMP
-    rcall DELAY_1S
+
+    ; Giro Der (5s+2*LOAD) -> Pausa (3s+2*LOAD) -> Giro Izq (5s+2*LOAD)
+    ldi SECONDS, 5
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
+    ldi SECONDS, 3
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
+    ldi SECONDS, 5
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
     inc STATE
     rjmp FSM_LOOP
 
@@ -118,9 +165,14 @@ CHANGE_LOAD:
     rcall DELAY_DEBOUNCE
     inc LOAD
     cpi LOAD, 3
-    brne END_CHANGE
+    brne WAIT_RELEASE
     clr LOAD
-END_CHANGE:
+WAIT_RELEASE:
+    rcall UPDATE_LOAD_LEDS ; Actualiza inmediatamente el LED al cambiar
+WAIT_LOOP:
+    sbic PIND, P_CARGA     ; Espera activa a que el switch vuelva a 0 (se suelte)
+    rjmp WAIT_LOOP
+    rcall DELAY_DEBOUNCE
     ret
 
 UPDATE_LOAD_LEDS:
@@ -143,10 +195,11 @@ LED_MEDIUM:
     out PORTC, TEMP
     ret
 
+; SUBRUTINA OPTIMIZADA
 DELAY_1S:
-    ldi r20, 82
-    ldi r21, 43
-    ldi r22, 0
+    ldi r20, 5
+    ldi r21, 50
+    ldi r22, 100
 L1: dec r22
     brne L1
     dec r21
@@ -162,4 +215,15 @@ L2: dec r21
     brne L2
     dec r20
     brne L2
+    ret
+
+; Subrutina para procesar N segundos dinámicos
+DELAY_N_SEC:
+    tst SECONDS
+    breq END_DELAY_N
+LOOP_N_SEC:
+    rcall DELAY_1S
+    dec SECONDS
+    brne LOOP_N_SEC
+END_DELAY_N:
     ret
