@@ -5,7 +5,10 @@
 ; --- Definición de Registros ---
 .def TEMP        = R16  ; Registro de trabajo general
 .def SECUENCIAS  = R17  ; Contador de secuencia actual (1 a 8)
-.def R_DELAY1    = R19  ; Registro para retardo antirrebote
+.def LED_PATRON  = R18  ; Registro para el patrón de los LEDs
+.def R_DELAY1    = R19  ; Registro 1 para retardo
+.def R_DELAY2    = R20  ; Registro 2 para retardo
+.def R_DELAY3    = R21  ; Registro 3 para retardo
 ; --- Vector de Reset ---
 .org 0x0000
     rjmp RESET
@@ -27,11 +30,41 @@ RESET:
     ; 3. Inicializar en Secuencia 1
     ldi SECUENCIAS, 1
 ; =====================================================================
-; BUCLE PRINCIPAL (todavía sin secuencias, solo lee botones)
+; BUCLE PRINCIPAL (Evaluador de Secuencias con saltos largos)
 ; =====================================================================
 MAIN_LOOP:
     rcall LEER_BOTONES
-    rjmp MAIN_LOOP
+    cpi SECUENCIAS, 1
+    brne CHK_2
+    jmp EJECUTAR_SEC1
+CHK_2:
+    cpi SECUENCIAS, 2
+    brne CHK_3
+    jmp EJECUTAR_SEC2
+CHK_3:
+    cpi SECUENCIAS, 3
+    brne CHK_4
+    jmp EJECUTAR_SEC3
+CHK_4:
+    cpi SECUENCIAS, 4
+    brne CHK_5
+    jmp EJECUTAR_SEC4
+CHK_5:
+    cpi SECUENCIAS, 5
+    brne CHK_6
+    jmp EJECUTAR_SEC5
+CHK_6:
+    cpi SECUENCIAS, 6
+    brne CHK_7
+    jmp EJECUTAR_SEC6
+CHK_7:
+    cpi SECUENCIAS, 7
+    brne CHK_8
+    jmp EJECUTAR_SEC7
+CHK_8:
+    cpi SECUENCIAS, 8
+    brne MAIN_LOOP
+    jmp EJECUTAR_SEC8
 ; =====================================================================
 ; MÓDULO: LECTURA DE BOTONES Y NAVEGACIÓN
 ; =====================================================================
@@ -67,11 +100,41 @@ BTN_RETROCEDER:
     ldi SECUENCIAS, 8
     ret
 ; =====================================================================
-; MÓDULO: ANTIRREBOTE (versión inicial, solo retardo)
+; MÓDULO: 8 SECUENCIAS LUMINOSAS (esqueleto, se van a ir completando)
+; =====================================================================
+EJECUTAR_SEC1:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC2:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC3:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC4:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC5:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC6:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC7:
+    rjmp MAIN_LOOP
+EJECUTAR_SEC8:
+    rjmp MAIN_LOOP
+; =====================================================================
+; MÓDULO: RUTINAS DE RETARDO Y ANTIRREBOTE
 ; =====================================================================
 ANTIRREBOTE:
     ldi R_DELAY1, 100
 DELAY_ANTI:
     dec R_DELAY1
     brne DELAY_ANTI
+    ret
+DELAY_LUM:
+    ldi R_DELAY1, 20
+    ldi R_DELAY2, 150
+    ldi R_DELAY3, 150
+L1: dec R_DELAY3
+    brne L1
+    dec R_DELAY2
+    brne L1
+    dec R_DELAY1
+    brne L1
     ret
