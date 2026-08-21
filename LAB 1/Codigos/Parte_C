@@ -122,9 +122,35 @@ S2_LOOP:
     lsr LED_PATRON
     brne S2_LOOP
     rjmp MAIN_LOOP
+; --- Secuencia 5: Parpadeo Alternado (nota: por error de tipeo quedó bajo la etiqueta EJECUTAR_SEC3) ---
 EJECUTAR_SEC3:
+    ldi LED_PATRON, 0xAA  ; 10101010b
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    com LED_PATRON        ; Invierte a 01010101b (0x55)
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
     rjmp MAIN_LOOP
+; --- Secuencia 4: Expansión desde Centro ---
 EJECUTAR_SEC4:
+    ldi LED_PATRON, 0x18  ; 00011000b
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    ldi LED_PATRON, 0x3C  ; 00111100b
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    ldi LED_PATRON, 0x7E  ; 01111110b
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    ldi LED_PATRON, 0xFF  ; 11111111b
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
     rjmp MAIN_LOOP
 EJECUTAR_SEC5:
     rjmp MAIN_LOOP
