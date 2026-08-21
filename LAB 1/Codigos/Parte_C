@@ -100,11 +100,27 @@ BTN_RETROCEDER:
     ldi SECUENCIAS, 8
     ret
 ; =====================================================================
-; MÓDULO: 8 SECUENCIAS LUMINOSAS (esqueleto, se van a ir completando)
+; MÓDULO: 8 SECUENCIAS LUMINOSAS
 ; =====================================================================
+; --- Secuencia 1: Auto Fantástico (Izquierda) ---
 EJECUTAR_SEC1:
+    ldi LED_PATRON, 0x01
+S1_LOOP:
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    lsl LED_PATRON
+    brne S1_LOOP
     rjmp MAIN_LOOP
+; --- Secuencia 2: Auto Fantástico (Derecha) ---
 EJECUTAR_SEC2:
+    ldi LED_PATRON, 0x80
+S2_LOOP:
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    lsr LED_PATRON
+    brne S2_LOOP
     rjmp MAIN_LOOP
 EJECUTAR_SEC3:
     rjmp MAIN_LOOP
