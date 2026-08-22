@@ -122,16 +122,23 @@ S2_LOOP:
     lsr LED_PATRON
     brne S2_LOOP
     rjmp MAIN_LOOP
-; --- Secuencia 5: Parpadeo Alternado (nota: por error de tipeo quedó bajo la etiqueta EJECUTAR_SEC3) ---
+; --- Secuencia 3: Auto Fantástico Completo (Ida y Vuelta) ---
 EJECUTAR_SEC3:
-    ldi LED_PATRON, 0xAA  ; 10101010b
+    ldi LED_PATRON, 0x01
+S5_IDA:
     out PORTD, LED_PATRON
     rcall DELAY_LUM
     rcall LEER_BOTONES
-    com LED_PATRON        ; Invierte a 01010101b (0x55)
+    lsl LED_PATRON         ; Desplaza a la izquierda
+    cpi LED_PATRON, 0x80   ; ¿Llegó al último bit?
+    brne S5_IDA
+S5_VUELTA:
     out PORTD, LED_PATRON
     rcall DELAY_LUM
     rcall LEER_BOTONES
+    lsr LED_PATRON         ; Desplaza a la derecha
+    cpi LED_PATRON, 0x01   ; ¿Regresó al primer bit?
+    brne S5_VUELTA
     rjmp MAIN_LOOP
 ; --- Secuencia 4: Expansión desde Centro ---
 EJECUTAR_SEC4:
@@ -152,23 +159,16 @@ EJECUTAR_SEC4:
     rcall DELAY_LUM
     rcall LEER_BOTONES
     rjmp MAIN_LOOP
-; --- Secuencia 3: Auto Fantástico Completo, Ida y Vuelta (nota: por error de tipeo quedó bajo la etiqueta EJECUTAR_SEC5) ---
+; --- Secuencia 5: Parpadeo Alternado ---
 EJECUTAR_SEC5:
-    ldi LED_PATRON, 0x01
-S5_IDA:
+    ldi LED_PATRON, 0xAA  ; 10101010b
     out PORTD, LED_PATRON
     rcall DELAY_LUM
     rcall LEER_BOTONES
-    lsl LED_PATRON         ; Desplaza a la izquierda
-    cpi LED_PATRON, 0x80   ; ¿Llegó al último bit?
-    brne S5_IDA
-S5_VUELTA:
+    com LED_PATRON        ; Invierte a 01010101b (0x55)
     out PORTD, LED_PATRON
     rcall DELAY_LUM
     rcall LEER_BOTONES
-    lsr LED_PATRON         ; Desplaza a la derecha
-    cpi LED_PATRON, 0x01   ; ¿Regresó al primer bit?
-    brne S5_VUELTA
     rjmp MAIN_LOOP
 ; --- Secuencia 6: Choque Extremos al Centro ---
 EJECUTAR_SEC6:
@@ -208,18 +208,38 @@ EJECUTAR_SEC7:
     rcall DELAY_LUM
     rcall LEER_BOTONES
     rjmp MAIN_LOOP
+; --- Secuencia 8: Destello Flash General ---
 EJECUTAR_SEC8:
+    ldi LED_PATRON, 0xFF
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
+    ldi LED_PATRON, 0x00
+    out PORTD, LED_PATRON
+    rcall DELAY_LUM
+    rcall LEER_BOTONES
     rjmp MAIN_LOOP
 ; =====================================================================
 ; MÓDULO: RUTINAS DE RETARDO Y ANTIRREBOTE
 ; =====================================================================
 ANTIRREBOTE:
+    ; Retardo para filtrar el rebote al presionar
     ldi R_DELAY1, 100
 DELAY_ANTI:
     dec R_DELAY1
     brne DELAY_ANTI
+ESPERA_SUELTA:
+    in TEMP, PINB          ; Releer Puerto B
+    andi TEMP, 0x07        ; Nos interesan solo PB0, PB1, PB2
+    cpi TEMP, 0x07         ; ¿Los tres botones están sueltos (en alto)?
+    brne ESPERA_SUELTA      ; Si alguno sigue presionado, seguir esperando
+    ; Retardo para filtrar el rebote al soltar
+    ldi R_DELAY1, 100
+DELAY_ANTI2:
+    dec R_DELAY1
+    brne DELAY_ANTI2
     ret
-DELAY_LUM:
+	DELAY_LUM:
     ldi R_DELAY1, 20
     ldi R_DELAY2, 150
     ldi R_DELAY3, 150
