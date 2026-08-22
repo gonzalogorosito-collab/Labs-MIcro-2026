@@ -5,6 +5,7 @@
 .def STATE   = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
 .def LOAD    = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
 .def COUNTER = r19    ; Contador auxiliar para ciclos de retardo
+.def R_DELAY1 = r20   ; Registro auxiliar para la rutina de antirrebote
 .def SECONDS = r23    ; Registro para la duración dinámica de retardos
 
 ; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
@@ -70,6 +71,7 @@ STATE_E0:
     sbis PIND, S_PUERTA
     rjmp FSM_LOOP
     
+    rcall ANTIRREBOTE      ; Llama a la rutina antirrebote al presionar Inicio
     inc STATE              ; Avanzar a E1 (Lavado)
     rjmp FSM_LOOP
 
@@ -162,17 +164,13 @@ WAIT_DOOR_OPEN:
 
 ; SUBRUTINAS
 CHANGE_LOAD:
-    rcall DELAY_DEBOUNCE
+    rcall ANTIRREBOTE      ; Aplica tu rutina antirrebote al presionar Carga
     inc LOAD
     cpi LOAD, 3
     brne WAIT_RELEASE
     clr LOAD
 WAIT_RELEASE:
     rcall UPDATE_LOAD_LEDS ; Actualiza inmediatamente el LED al cambiar
-WAIT_LOOP:
-    sbic PIND, P_CARGA     ; Espera activa a que el switch vuelva a 0 (se suelte)
-    rjmp WAIT_LOOP
-    rcall DELAY_DEBOUNCE
     ret
 
 UPDATE_LOAD_LEDS:
@@ -195,7 +193,26 @@ LED_MEDIUM:
     out PORTC, TEMP
     ret
 
-; SUBRUTINA OPTIMIZADA
+; --- RUTINA ANTIRREBOTE SOLICITADA ---
+ANTIRREBOTE:
+    ; Retardo para filtrar el rebote al presionar
+    ldi R_DELAY1, 100
+DELAY_ANTI:
+    dec R_DELAY1
+    brne DELAY_ANTI
+ESPERA_SUELTA:
+    in TEMP, PIND           ; Releer Puerto D (Entradas de botones)
+    andi TEMP, 0x0C         ; Nos interesan PD2 (Inicio) y PD3 (Carga)
+    cpi TEMP, 0x00          ; ¿Ambos botones están sueltos (en 0V)?
+    brne ESPERA_SUELTA      ; Si alguno sigue presionado, seguir esperando
+    ; Retardo para filtrar el rebote al soltar
+    ldi R_DELAY1, 100
+DELAY_ANTI2:
+    dec R_DELAY1
+    brne DELAY_ANTI2
+    ret
+
+; SUBRUTINA OPTIMIZADA PARA SIMULACIÓN FLUIDA EN PICSIMLAB
 DELAY_1S:
     ldi r20, 5
     ldi r21, 50
