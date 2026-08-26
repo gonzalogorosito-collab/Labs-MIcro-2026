@@ -223,12 +223,23 @@ EJECUTAR_SEC8:
 ; MÓDULO: RUTINAS DE RETARDO Y ANTIRREBOTE
 ; =====================================================================
 ANTIRREBOTE:
+    ; Retardo para filtrar el rebote al presionar
     ldi R_DELAY1, 100
 DELAY_ANTI:
     dec R_DELAY1
     brne DELAY_ANTI
+ESPERA_SUELTA:
+    in TEMP, PINB          ; Releer Puerto B
+    andi TEMP, 0x07        ; Nos interesan solo PB0, PB1, PB2
+    cpi TEMP, 0x07         ; ¿Los tres botones están sueltos (en alto)?
+    brne ESPERA_SUELTA      ; Si alguno sigue presionado, seguir esperando
+    ; Retardo para filtrar el rebote al soltar
+    ldi R_DELAY1, 100
+DELAY_ANTI2:
+    dec R_DELAY1
+    brne DELAY_ANTI2
     ret
-DELAY_LUM:
+	DELAY_LUM:
     ldi R_DELAY1, 20
     ldi R_DELAY2, 150
     ldi R_DELAY3, 150
