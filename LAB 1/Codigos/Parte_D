@@ -53,4 +53,10 @@ RESET:
     OUT  PORTB, R16
 
 MAIN:
+    IN   R16, PIND
+    COM  R16
+    LSR  R16
+    LSR  R16
+    ANDI R16, 0b00001111
+    OUT  PORTB, R16
     RJMP MAIN
