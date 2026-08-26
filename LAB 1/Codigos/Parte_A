@@ -8,6 +8,11 @@
 .def R_DELAY1 = r20   ; Registro auxiliar para la rutina de antirrebote
 .def SECONDS = r23    ; Registro para la duración dinámica de retardos
 
+; Registros específicos para el retardo exacto de 1s a 16MHz
+.def DEL_1 = r24
+.def DEL_2 = r25
+.def DEL_3 = r26
+
 ; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
 .equ P_INICIO = PD2   ; Pulsador de Inicio (Arduino Pin 2)
 .equ P_CARGA  = PD3   ; Pulsador de Selección de Carga (Arduino Pin 3)
@@ -55,29 +60,26 @@ FSM_LOOP:
     rjmp FSM_LOOP
 
 ; E0: ESTADO LISTO
-; Salida: LED_Listo (PB0 / Pin 8) ON. Selección de carga mediante PORTC.
 STATE_E0:
     ldi TEMP, (1<<PB0)
     out PORTB, TEMP       ; Activa únicamente el LED de Estado Listo
     rcall UPDATE_LOAD_LEDS; Refresca el indicador LED del nivel de carga actual
 
-    ; Verificar pulsador de cambio de carga (PD3)
     sbic PIND, P_CARGA
     rcall CHANGE_LOAD
 
-    ; Evaluación de transición a E1: Requiere P_INICIO (PD2)=1 Y S_PUERTA (PD4)=1
     sbis PIND, P_INICIO
     rjmp FSM_LOOP
     sbis PIND, S_PUERTA
     rjmp FSM_LOOP
     
-    rcall ANTIRREBOTE      ; Llama a la rutina antirrebote al presionar Inicio
+    rcall ANTIRREBOTE      
     inc STATE              ; Avanzar a E1 (Lavado)
     rjmp FSM_LOOP
 
 ; --- E1: LAVADO ---
 STATE_E1:
-    ldi TEMP, (1<<PB1)     ; Enciende INMEDIATAMENTE el LED Lavado (Pin 9)
+    ldi TEMP, (1<<PB1)     ; Enciende el LED Lavado (Pin 9)
     out PORTB, TEMP
 WAIT_WATER:
     sbis PIND, S_AGUA      ; Espera a que el tanque esté lleno (PD5 = 1)
@@ -85,17 +87,17 @@ WAIT_WATER:
 
     ldi COUNTER, 5
 WASH_CYCLE: 
-    ; 1. GIRO: Enciende LED Lavado y espera (2s + LOAD)
+    ; 1. GIRO: Enciende LED Lavado (PB1 ON) -> 3s base + LOAD en tiempo REAL
     ldi TEMP, (1<<PB1)
     out PORTB, TEMP
-    ldi SECONDS, 2
+    ldi SECONDS, 3
     add SECONDS, LOAD
     rcall DELAY_N_SEC
 
-    ; 2. PAUSA: Apaga el LED y espera (1s + LOAD) para visualizar el parpadeo
+    ; 2. PAUSA: Apaga LED Lavado (PB1 OFF) -> 3s base + LOAD en tiempo REAL
     clr TEMP
     out PORTB, TEMP
-    ldi SECONDS, 1
+    ldi SECONDS, 3
     add SECONDS, LOAD
     rcall DELAY_N_SEC
 
@@ -109,7 +111,6 @@ STATE_E2:
     ldi TEMP, (1<<PB2)     ; Enciende LED Centrifugado (Pin 10)
     out PORTB, TEMP
     
-    ; Centrifugado dinámico (15s base + 3s por carga)
     ldi SECONDS, 15
     cpi LOAD, 0
     breq RUN_SPIN
@@ -130,7 +131,6 @@ STATE_E3:
     ldi TEMP, (1<<PB3)     ; Enciende LED Secado (Pin 11)
     out PORTB, TEMP
 
-    ; Giro Der (5s+2*LOAD) -> Pausa (3s+2*LOAD) -> Giro Izq (5s+2*LOAD)
     ldi SECONDS, 5
     mov TEMP, LOAD
     lsl TEMP
@@ -164,13 +164,13 @@ WAIT_DOOR_OPEN:
 
 ; SUBRUTINAS
 CHANGE_LOAD:
-    rcall ANTIRREBOTE      ; Aplica tu rutina antirrebote al presionar Carga
+    rcall ANTIRREBOTE
     inc LOAD
     cpi LOAD, 3
     brne WAIT_RELEASE
     clr LOAD
 WAIT_RELEASE:
-    rcall UPDATE_LOAD_LEDS ; Actualiza inmediatamente el LED al cambiar
+    rcall UPDATE_LOAD_LEDS
     ret
 
 UPDATE_LOAD_LEDS:
@@ -193,48 +193,35 @@ LED_MEDIUM:
     out PORTC, TEMP
     ret
 
-; --- RUTINA ANTIRREBOTE SOLICITADA ---
+; --- RUTINA ANTIRREBOTE REAL ---
 ANTIRREBOTE:
-    ; Retardo para filtrar el rebote al presionar
-    ldi R_DELAY1, 100
-DELAY_ANTI:
-    dec R_DELAY1
-    brne DELAY_ANTI
+    ; Retardo de ~50ms reales para filtrar rebotes en hardware
+    ldi SECONDS, 1
+    rcall DELAY_1S
 ESPERA_SUELTA:
-    in TEMP, PIND           ; Releer Puerto D (Entradas de botones)
-    andi TEMP, 0x0C         ; Nos interesan PD2 (Inicio) y PD3 (Carga)
-    cpi TEMP, 0x00          ; ¿Ambos botones están sueltos (en 0V)?
-    brne ESPERA_SUELTA      ; Si alguno sigue presionado, seguir esperando
-    ; Retardo para filtrar el rebote al soltar
-    ldi R_DELAY1, 100
-DELAY_ANTI2:
-    dec R_DELAY1
-    brne DELAY_ANTI2
+    in TEMP, PIND
+    andi TEMP, 0x0C
+    cpi TEMP, 0x00
+    brne ESPERA_SUELTA
     ret
 
-; SUBRUTINA OPTIMIZADA PARA SIMULACIÓN FLUIDA EN PICSIMLAB
+; =============================================================
+; RUTINA DE RETARDO 
+; =============================================================
+; Genera un retardo preciso de 1.000.000 µs (1 segundo real)
 DELAY_1S:
-    ldi r20, 5
-    ldi r21, 50
-    ldi r22, 100
-L1: dec r22
+    ldi DEL_1, 82
+    ldi DEL_2, 43
+    ldi DEL_3, 0
+L1: 
+    dec DEL_3
     brne L1
-    dec r21
+    dec DEL_2
     brne L1
-    dec r20
+    dec DEL_1
     brne L1
     ret
 
-DELAY_DEBOUNCE:
-    ldi r20, 2
-    ldi r21, 150
-L2: dec r21
-    brne L2
-    dec r20
-    brne L2
-    ret
-
-; Subrutina para procesar N segundos dinámicos
 DELAY_N_SEC:
     tst SECONDS
     breq END_DELAY_N
