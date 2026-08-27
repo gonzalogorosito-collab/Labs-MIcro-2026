@@ -53,7 +53,35 @@ RESET:
     OUT  PORTB, R16
 
 MAIN:
-    ; --- Leer S1:S0 desde PIND (bits 6 y 7) ---
+    RCALL LEER_A
+    RCALL LEER_B
+    RCALL LEER_S
+
+    CPI  R16, 0
+    BREQ OP_CLEAR
+
+    RJMP MAIN
+
+OP_CLEAR:
+    CLR  R19
+    OUT  PORTB, R19
+    RJMP MAIN
+
+LEER_A:
+    IN   R17, PIND
+    COM  R17
+    LSR  R17
+    LSR  R17
+    ANDI R17, 0b00001111
+    RET
+
+LEER_B:
+    IN   R18, PINC
+    COM  R18
+    ANDI R18, 0b00001111
+    RET
+
+LEER_S:
     IN   R16, PIND
     COM  R16
     LSR  R16
@@ -62,21 +90,17 @@ MAIN:
     LSR  R16
     LSR  R16
     LSR  R16
-    ANDI R16, 0b00000011      ; R16 = 0000 00 S1 S0
+    ANDI R16, 0b00000011
 
-    ; --- Leer S2 desde PINC (bit 4) ---
-    IN   R17, PINC
-    COM  R17
-    LSR  R17
-    LSR  R17
-    LSR  R17
-    LSR  R17
-    ANDI R17, 0b00000001
-    LSL  R17
-    LSL  R17                  ; R17 = 0000 0 S2 0 0
+    IN   R20, PINC
+    COM  R20
+    LSR  R20
+    LSR  R20
+    LSR  R20
+    LSR  R20
+    ANDI R20, 0b00000001
+    LSL  R20
+    LSL  R20
 
-    ; --- Combinar en un unico valor S2 S1 S0 (0 a 7) ---
-    OR   R16, R17              ; R16 = 0000 0 S2 S1 S0
-
-    OUT  PORTB, R16
-    RJMP MAIN
+    OR   R16, R20
+    RET
