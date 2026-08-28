@@ -34,24 +34,22 @@ RESET:
     OUT  SPH, R16
 
     ; --- Configuracion de puertos ---
-    ; PORTD: PD2-PD5 = A0-A3 (entrada), PD6-PD7 = S0,S1 (entrada)
     LDI  R16, 0b00000000
     OUT  DDRD, R16
     LDI  R16, 0b11111100
     OUT  PORTD, R16
 
-    ; PORTC: PC0-PC3 = B0-B3 (entrada), PC4 = S2 (entrada), PC5 = C (salida)
     LDI  R16, 0b00100000
     OUT  DDRC, R16
     LDI  R16, 0b00011111
     OUT  PORTC, R16
 
-    ; PORTB: PB0-PB3 = F0-F3, PB4 = Z, PB5 = N (todas salidas)
     LDI  R16, 0b00111111
     OUT  DDRB, R16
     LDI  R16, 0b00000000
     OUT  PORTB, R16
 
+; --- Bucle principal ---
 MAIN:
     RCALL LEER_A
     RCALL LEER_B
@@ -60,10 +58,13 @@ MAIN:
     CPI  R16, 0
     BREQ OP_CLEAR
     CPI  R16, 1
-    BREQ OP_A_MINUS_B
+    BREQ OP_A_MENOS_B
+    CPI  R16, 2
+    BREQ OP_A_MAS_B
 
     RJMP MAIN
 
+; --- Operaciones de la ALU ---
 OP_CLEAR:
     CLR  R19
     OUT  PORTB, R19
@@ -76,6 +77,14 @@ OP_A_MENOS_B:
     OUT  PORTB, R21
     RJMP MAIN
 
+OP_A_MAS_B:
+    MOV  R21, R17
+    ADD  R21, R18
+    ANDI R21, 0b00001111
+    OUT  PORTB, R21
+    RJMP MAIN
+
+; --- Lectura de entradas ---
 LEER_A:
     IN   R17, PIND
     COM  R17
