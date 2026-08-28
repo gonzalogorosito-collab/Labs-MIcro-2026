@@ -1,23 +1,23 @@
-.include "m328pdef.inc"
+include "m328pdef.inc"
 
 ; --- DEFINICIÓN DE REGISTROS ---
-.def TEMP    = r16    ; Registro temporal de trabajo
-.def STATE   = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
-.def LOAD    = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
-.def COUNTER = r19    ; Contador auxiliar para ciclos de retardo
-.def R_DELAY1 = r20   ; Registro auxiliar para la rutina de antirrebote
-.def SECONDS = r23    ; Registro para la duración dinámica de retardos
+.def TEMP     = r16    ; Registro temporal de trabajo
+.def STATE    = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
+.def LOAD     = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
+.def COUNTER  = r19    ; Contador auxiliar para ciclos de retardo
+.def R_DELAY1 = r20    ; Registro auxiliar para la rutina de antirrebote
+.def SECONDS  = r23    ; Registro para la duración dinámica de retardos
 
-; Registros específicos para el retardo exacto de 1s a 16MHz
+; Registros para el retardo de 1s 
 .def DEL_1 = r24
 .def DEL_2 = r25
-.def DEL_3 = r26
+.def DEL_3 = r21
 
 ; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
-.equ P_INICIO = PD2   ; Pulsador de Inicio (Arduino Pin 2)
-.equ P_CARGA  = PD3   ; Pulsador de Selección de Carga (Arduino Pin 3)
-.equ S_PUERTA = PD4   ; Sensor de Puerta Cerrada (Arduino Pin 4, 1 = Cerrada)
-.equ S_AGUA   = PD5   ; Sensor de Nivel de Agua (Arduino Pin 5, 1 = Lleno)
+.equ P_INICIO = PD2    ; Pulsador de Inicio (Arduino Pin 2)
+.equ P_CARGA  = PD3    ; Pulsador de Selección de Carga (Arduino Pin 3)
+.equ S_PUERTA = PD4    ; Sensor de Puerta Cerrada (Arduino Pin 4, 1 = Cerrada)
+.equ S_AGUA   = PD5    ; Sensor de Nivel de Agua (Arduino Pin 5, 1 = Lleno)
 
 ; --- VECTOR DE RESET ---
 .cseg
@@ -48,16 +48,28 @@ RESET:
 ; BUCLE PRINCIPAL DE LA MÁQUINA DE ESTADOS (FSM)
 FSM_LOOP:
     cpi STATE, 0
-    breq STATE_E0
+    brne CHECK_E1
+    rjmp STATE_E0
+
+CHECK_E1:
     cpi STATE, 1
-    breq STATE_E1
+    brne CHECK_E2
+    rjmp STATE_E1
+
+CHECK_E2:
     cpi STATE, 2
-    breq STATE_E2
+    brne CHECK_E3
+    rjmp STATE_E2
+
+CHECK_E3:
     cpi STATE, 3
-    breq STATE_E3
+    brne CHECK_E4
+    rjmp STATE_E3
+
+CHECK_E4:
     cpi STATE, 4
-    breq STATE_E4
-    rjmp FSM_LOOP
+    brne FSM_LOOP
+    rjmp STATE_E4
 
 ; E0: ESTADO LISTO
 STATE_E0:
@@ -73,8 +85,8 @@ STATE_E0:
     sbis PIND, S_PUERTA
     rjmp FSM_LOOP
     
-    rcall ANTIRREBOTE      
-    inc STATE              ; Avanzar a E1 (Lavado)
+    rcall ANTIRREBOTE     
+    inc STATE             ; Avanzar a E1 (Lavado)
     rjmp FSM_LOOP
 
 ; --- E1: LAVADO ---
@@ -195,7 +207,6 @@ LED_MEDIUM:
 
 ; --- RUTINA ANTIRREBOTE REAL ---
 ANTIRREBOTE:
-    ; Retardo de ~50ms reales para filtrar rebotes en hardware
     ldi SECONDS, 1
     rcall DELAY_1S
 ESPERA_SUELTA:
@@ -206,9 +217,8 @@ ESPERA_SUELTA:
     ret
 
 ; =============================================================
-; RUTINA DE RETARDO 
+; RUTINA DE RETARDO
 ; =============================================================
-; Genera un retardo preciso de 1.000.000 µs (1 segundo real)
 DELAY_1S:
     ldi DEL_1, 82
     ldi DEL_2, 43
