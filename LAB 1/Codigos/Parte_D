@@ -1,106 +1,243 @@
-; Entradas:
-;   PD2 (D2) - A0            PC0 (A0) - B0
-;   PD3 (D3) - A1            PC1 (A1) - B1
-;   PD4 (D4) - A2            PC2 (A2) - B2
-;   PD5 (D5) - A3            PC3 (A3) - B3
-;   PD6 (D6) - S1            PC4 (A4) - S2
-;   PD7 (D7) - S0
-;   (todas con pull-up interno, interruptor a GND; logica invertida por
-;   software para que interruptor accionado = 1)
-;
-; Salidas:
-;   PB0 (D8)  - F0
-;   PB1 (D9)  - F1
-;   PB2 (D10) - F2
-;   PB3 (D11) - F3
-;   PB4 (D12) - Z (bandera Zero)
-;   PB5 (D13) - N (bandera Negativo)
-;   PC5 (A5)  - C (bandera Carry)
-;
-; Funcionamiento: ALU combinacional de 4 bits (ver tabla S2 S1 S0 de
-; operaciones). El resultado se actualiza en forma continua segun el
-; estado de los interruptores.
+include "m328pdef.inc"
 
-.include "m328pdef.inc"
+; --- DEFINICIÓN DE REGISTROS ---
+.def TEMP     = r16    ; Registro temporal de trabajo
+.def STATE    = r17    ; Estado de la FSM (0:Listo, 1:Lavado, 2:Centrifugado, 3:Secado, 4:Fin)
+.def LOAD     = r18    ; Tipo de Carga (0: Ligera, 1: Media, 2: Pesada)
+.def COUNTER  = r19    ; Contador auxiliar para ciclos de retardo
+.def R_DELAY1 = r20    ; Registro auxiliar para la rutina de antirrebote
+.def SECONDS  = r23    ; Registro para la duración dinámica de retardos
 
-.ORG 0x0000
-    RJMP RESET
+; Registros para el retardo de 1s 
+.def DEL_1 = r24
+.def DEL_2 = r25
+.def DEL_3 = r21
+
+; --- DEFINICIÓN DE PINES (PORTD - Entradas) ---
+.equ P_INICIO = PD2    ; Pulsador de Inicio (Arduino Pin 2)
+.equ P_CARGA  = PD3    ; Pulsador de Selección de Carga (Arduino Pin 3)
+.equ S_PUERTA = PD4    ; Sensor de Puerta Cerrada (Arduino Pin 4, 1 = Cerrada)
+.equ S_AGUA   = PD5    ; Sensor de Nivel de Agua (Arduino Pin 5, 1 = Lleno)
+
+; --- VECTOR DE RESET ---
+.cseg
+.org 0x0000
+    rjmp RESET
 
 RESET:
-    ; Configuracion del Stack Pointer
-    LDI  R16, LOW(RAMEND)
-    OUT  SPL, R16
-    LDI  R16, HIGH(RAMEND)
-    OUT  SPH, R16
+    ; 1. Inicialización de la Pila (Stack Pointer)
+    ldi TEMP, HIGH(RAMEND)
+    out SPH, TEMP
+    ldi TEMP, LOW(RAMEND)
+    out SPL, TEMP
 
-    ; --- Configuracion de puertos ---
-    ; PORTD: PD2-PD5 = A0-A3 (entrada), PD6-PD7 = S1,S0 (entrada)
-    LDI  R16, 0b00000000
-    OUT  DDRD, R16
-    LDI  R16, 0b11111100
-    OUT  PORTD, R16
+    ; 2. Configuración de Direcciones I/O (DDR)
+    clr TEMP
+    out DDRD, TEMP        ; PORTD completo como ENTRADAS (PD2..PD5)
+    
+    ldi TEMP, 0x1F        ; PB0..PB4 como SALIDAS (LEDs de Estado: Pines 8-12)
+    out DDRB, TEMP
+    
+    ldi TEMP, 0x07        ; PC0..PC2 como SALIDAS (LEDs de Carga: Pines A0-A2)
+    out DDRC, TEMP
 
-    ; PORTC: PC0-PC3 = B0-B3 (entrada), PC4 = S2 (entrada), PC5 = C (salida)
-    LDI  R16, 0b00100000
-    OUT  DDRC, R16
-    LDI  R16, 0b00011111
-    OUT  PORTC, R16
+    ; 3. Inicialización de Variables
+    clr STATE             ; Arrancar en Estado E0 (Listo)
+    clr LOAD              ; Arrancar en Carga Ligera (0)
 
-    ; PORTB: PB0-PB3 = F0-F3, PB4 = Z, PB5 = N (todas salidas)
-    LDI  R16, 0b00111111
-    OUT  DDRB, R16
-    LDI  R16, 0b00000000
-    OUT  PORTB, R16
+; BUCLE PRINCIPAL DE LA MÁQUINA DE ESTADOS (FSM)
+FSM_LOOP:
+    cpi STATE, 0
+    brne CHECK_E1
+    rjmp STATE_E0
 
-MAIN:
-    RCALL LEER_A
-    RCALL LEER_B
-    RCALL LEER_S
+CHECK_E1:
+    cpi STATE, 1
+    brne CHECK_E2
+    rjmp STATE_E1
 
-    CPI  R16, 0
-    BREQ OP_CLEAR
+CHECK_E2:
+    cpi STATE, 2
+    brne CHECK_E3
+    rjmp STATE_E2
 
-    RJMP MAIN
+CHECK_E3:
+    cpi STATE, 3
+    brne CHECK_E4
+    rjmp STATE_E3
 
-OP_CLEAR:
-    CLR  R19
-    OUT  PORTB, R19
-    RJMP MAIN
+CHECK_E4:
+    cpi STATE, 4
+    brne FSM_LOOP
+    rjmp STATE_E4
 
-LEER_A:
-    IN   R17, PIND
-    COM  R17
-    LSR  R17
-    LSR  R17
-    ANDI R17, 0b00001111
-    RET
+; E0: ESTADO LISTO
+STATE_E0:
+    ldi TEMP, (1<<PB0)
+    out PORTB, TEMP       ; Activa únicamente el LED de Estado Listo
+    rcall UPDATE_LOAD_LEDS; Refresca el indicador LED del nivel de carga actual
 
-LEER_B:
-    IN   R18, PINC
-    COM  R18
-    ANDI R18, 0b00001111
-    RET
+    sbic PIND, P_CARGA
+    rcall CHANGE_LOAD
 
-LEER_S:
-    IN   R16, PIND
-    COM  R16
-    LSR  R16
-    LSR  R16
-    LSR  R16
-    LSR  R16
-    LSR  R16
-    LSR  R16
-    ANDI R16, 0b00000011
+    sbis PIND, P_INICIO
+    rjmp FSM_LOOP
+    sbis PIND, S_PUERTA
+    rjmp FSM_LOOP
+    
+    rcall ANTIRREBOTE     
+    inc STATE             ; Avanzar a E1 (Lavado)
+    rjmp FSM_LOOP
 
-    IN   R20, PINC
-    COM  R20
-    LSR  R20
-    LSR  R20
-    LSR  R20
-    LSR  R20
-    ANDI R20, 0b00000001
-    LSL  R20
-    LSL  R20
+; --- E1: LAVADO ---
+STATE_E1:
+    ldi TEMP, (1<<PB1)     ; Enciende el LED Lavado (Pin 9)
+    out PORTB, TEMP
+WAIT_WATER:
+    sbis PIND, S_AGUA      ; Espera a que el tanque esté lleno (PD5 = 1)
+    rjmp WAIT_WATER
 
-    OR   R16, R20
-    RET
+    ldi COUNTER, 5
+WASH_CYCLE: 
+    ; 1. GIRO: Enciende LED Lavado (PB1 ON) -> 3s base + LOAD en tiempo REAL
+    ldi TEMP, (1<<PB1)
+    out PORTB, TEMP
+    ldi SECONDS, 3
+    add SECONDS, LOAD
+    rcall DELAY_N_SEC
+
+    ; 2. PAUSA: Apaga LED Lavado (PB1 OFF) -> 3s base + LOAD en tiempo REAL
+    clr TEMP
+    out PORTB, TEMP
+    ldi SECONDS, 3
+    add SECONDS, LOAD
+    rcall DELAY_N_SEC
+
+    dec COUNTER
+    brne WASH_CYCLE
+    inc STATE
+    rjmp FSM_LOOP
+
+; --- E2: CENTRIFUGADO ---
+STATE_E2:
+    ldi TEMP, (1<<PB2)     ; Enciende LED Centrifugado (Pin 10)
+    out PORTB, TEMP
+    
+    ldi SECONDS, 15
+    cpi LOAD, 0
+    breq RUN_SPIN
+    cpi LOAD, 1
+    brne SPIN_HEAVY
+    ldi SECONDS, 18
+    rjmp RUN_SPIN
+SPIN_HEAVY:
+    ldi SECONDS, 21
+RUN_SPIN:
+    rcall DELAY_N_SEC
+
+    inc STATE
+    rjmp FSM_LOOP
+
+; --- E3: SECADO ---
+STATE_E3:
+    ldi TEMP, (1<<PB3)     ; Enciende LED Secado (Pin 11)
+    out PORTB, TEMP
+
+    ldi SECONDS, 5
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
+    ldi SECONDS, 3
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
+    ldi SECONDS, 5
+    mov TEMP, LOAD
+    lsl TEMP
+    add SECONDS, TEMP
+    rcall DELAY_N_SEC
+
+    inc STATE
+    rjmp FSM_LOOP
+
+; --- E4: FIN ---
+STATE_E4:
+    ldi TEMP, (1<<PB4)     ; Enciende LED Fin (Pin 12)
+    out PORTB, TEMP
+WAIT_DOOR_OPEN:
+    sbic PIND, S_PUERTA
+    rjmp WAIT_DOOR_OPEN
+    clr STATE              ; Reinicia a E0 al abrir la puerta
+    rjmp FSM_LOOP
+
+; SUBRUTINAS
+CHANGE_LOAD:
+    rcall ANTIRREBOTE
+    inc LOAD
+    cpi LOAD, 3
+    brne WAIT_RELEASE
+    clr LOAD
+WAIT_RELEASE:
+    rcall UPDATE_LOAD_LEDS
+    ret
+
+UPDATE_LOAD_LEDS:
+    cpi LOAD, 0
+    breq LED_LIGHT
+    cpi LOAD, 1
+    breq LED_MEDIUM
+    
+    ldi TEMP, (1<<PC2)     ; Carga Pesada (A2)
+    out PORTC, TEMP
+    ret
+
+LED_LIGHT:
+    ldi TEMP, (1<<PC0)     ; Carga Ligera (A0)
+    out PORTC, TEMP
+    ret
+
+LED_MEDIUM:
+    ldi TEMP, (1<<PC1)     ; Carga Media (A1)
+    out PORTC, TEMP
+    ret
+
+; --- RUTINA ANTIRREBOTE REAL ---
+ANTIRREBOTE:
+    ldi SECONDS, 1
+    rcall DELAY_1S
+ESPERA_SUELTA:
+    in TEMP, PIND
+    andi TEMP, 0x0C
+    cpi TEMP, 0x00
+    brne ESPERA_SUELTA
+    ret
+
+; =============================================================
+; RUTINA DE RETARDO
+; =============================================================
+DELAY_1S:
+    ldi DEL_1, 82
+    ldi DEL_2, 43
+    ldi DEL_3, 0
+L1: 
+    dec DEL_3
+    brne L1
+    dec DEL_2
+    brne L1
+    dec DEL_1
+    brne L1
+    ret
+
+DELAY_N_SEC:
+    tst SECONDS
+    breq END_DELAY_N
+LOOP_N_SEC:
+    rcall DELAY_1S
+    dec SECONDS
+    brne LOOP_N_SEC
+END_DELAY_N:
+    ret
