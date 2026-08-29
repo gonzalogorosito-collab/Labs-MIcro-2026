@@ -63,6 +63,8 @@ MAIN:
     BREQ OP_A_MAS_B
     CPI  R16, 3
     BREQ OP_XOR
+    CPI  R16, 4
+    BREQ OP_AND
 
     RJMP MAIN
 
@@ -89,6 +91,13 @@ OP_A_MAS_B:
 OP_XOR:
     MOV  R21, R17
     EOR  R21, R18
+    ANDI R21, 0b00001111
+    OUT  PORTB, R21
+    RJMP MAIN
+
+OP_AND:
+    MOV  R21, R17
+    AND  R21, R18
     ANDI R21, 0b00001111
     OUT  PORTB, R21
     RJMP MAIN
