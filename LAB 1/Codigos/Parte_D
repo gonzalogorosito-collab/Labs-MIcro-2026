@@ -65,6 +65,8 @@ MAIN:
     BREQ OP_XOR
     CPI  R16, 4
     BREQ OP_AND
+    CPI  R16, 5
+    BREQ OP_OR
 
     RJMP MAIN
 
@@ -98,6 +100,13 @@ OP_XOR:
 OP_AND:
     MOV  R21, R17
     AND  R21, R18
+    ANDI R21, 0b00001111
+    OUT  PORTB, R21
+    RJMP MAIN
+
+OP_OR:
+    MOV  R21, R17
+    OR   R21, R18
     ANDI R21, 0b00001111
     OUT  PORTB, R21
     RJMP MAIN
