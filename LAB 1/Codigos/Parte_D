@@ -18,8 +18,8 @@
 ;   PC5 (A5)  - C (bandera Carry)
 ;
 ; Funcionamiento: ALU combinacional de 4 bits (ver tabla S2 S1 S0 de
-; operaciones). El resultado se actualiza en forma continua segun el
-; estado de los interruptores.
+; operaciones). El resultado y las banderas se actualizan en forma
+; continua segun el estado de los interruptores.
 
 .include "m328pdef.inc"
 
@@ -76,57 +76,108 @@ MAIN:
 
 ; --- Operaciones de la ALU ---
 OP_CLEAR:
-    CLR  R19
-    OUT  PORTB, R19
-    RJMP MAIN
+    CLR  R21
+    CLR  R23
+    RJMP ACTUALIZAR_SALIDA
 
 OP_A_MENOS_B:
     MOV  R21, R17
     SUB  R21, R18
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    CLR  R23
+    BRCC OP_A_MENOS_B_FIN
+    LDI  R23, 1
+OP_A_MENOS_B_FIN:
+    RJMP ACTUALIZAR_SALIDA
 
 OP_A_MAS_B:
     MOV  R21, R17
     ADD  R21, R18
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    CLR  R23
+    SBRC R21, 4
+    LDI  R23, 1
+    RJMP ACTUALIZAR_SALIDA
 
 OP_XOR:
     MOV  R21, R17
     EOR  R21, R18
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    CLR  R23
+    RJMP ACTUALIZAR_SALIDA
 
 OP_AND:
     MOV  R21, R17
     AND  R21, R18
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    CLR  R23
+    RJMP ACTUALIZAR_SALIDA
 
 OP_OR:
     MOV  R21, R17
     OR   R21, R18
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    CLR  R23
+    RJMP ACTUALIZAR_SALIDA
 
 OP_SHL:
     MOV  R21, R17
+    CLR  R23
+    SBRC R17, 3
+    LDI  R23, 1
     LSL  R21
-    ANDI R21, 0b00001111
-    OUT  PORTB, R21
-    RJMP MAIN
+    RJMP ACTUALIZAR_SALIDA
 
 OP_INC:
     MOV  R21, R17
     INC  R21
+    CLR  R23
+    SBRC R21, 4
+    LDI  R23, 1
+    RJMP ACTUALIZAR_SALIDA
+
+; --- Calculo de banderas y salida ---
+ACTUALIZAR_SALIDA:
     ANDI R21, 0b00001111
+
+    CPI  R21, 0
+    BRNE NO_ZERO
+    LDI  R24, 1
+    RJMP FIN_ZERO
+NO_ZERO:
+    CLR  R24
+FIN_ZERO:
+
+    MOV  R25, R21
+    ANDI R25, 0b00001000
+    BREQ NO_NEG
+    LDI  R25, 1
+    RJMP FIN_NEG
+NO_NEG:
+    CLR  R25
+FIN_NEG:
+
+    MOV  R26, R24
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    OR   R21, R26
+
+    MOV  R26, R25
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    OR   R21, R26
+
     OUT  PORTB, R21
+
+    MOV  R26, R23
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    LSL  R26
+    ORI  R26, 0b00011111
+    OUT  PORTC, R26
+
     RJMP MAIN
 
 ; --- Lectura de entradas ---
