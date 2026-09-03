@@ -25,7 +25,7 @@
 .def cnthi   = r24
 .def temp3   = r25
 
-.equ BLINKTH_LO = low(480)      ; umbral de overflows de Timer0 para alternar frame (~500ms)
+.equ BLINKTH_LO = low(480)
 .equ BLINKTH_HI = high(480)
 
 ; ---------------- Vectores de interrupcion ----------------
@@ -33,11 +33,11 @@
 .org 0x0000
     rjmp RESET
 .org 0x0002
-    rjmp INT0_ISR         ; boton "par siguiente"
+    rjmp INT0_ISR
 .org 0x0004
-    rjmp INT1_ISR         ; boton "par anterior"
+    rjmp INT1_ISR
 .org 0x0020
-    rjmp TIM0_ISR         ; refresco de matriz + control de parpadeo
+    rjmp TIM0_ISR
 
 ; ================= INICIALIZACION =================
 .org 0x0034
@@ -47,36 +47,31 @@ RESET:
     ldi temp, high(RAMEND)
     out SPH, temp
 
-    ; --- direcciones de puertos ---
-    ldi temp, 0xF0          ; PD4-7 salida (anodo), PD2-3 entrada (botones)
+    ldi temp, 0xF0
     out DDRD, temp
-    ldi temp, 0x3F          ; PB0-5 salida (anodo 4-7 + catodo 0-1)
+    ldi temp, 0x3F
     out DDRB, temp
-    ldi temp, 0x3F          ; PC0-5 salida (catodo 2-7)
+    ldi temp, 0x3F
     out DDRC, temp
 
-    ; --- pull-up interno en los botones ---
-    ldi temp, 0x0C          ; pull-up en PD2,PD3
+    ldi temp, 0x0C
     out PORTD, temp
     clr temp
     out PORTB, temp
     out PORTC, temp
 
-    ; --- variables de estado ---
-    clr row                  ; fila que se esta refrescando (0-7)
-    clr pair                 ; par de imagenes actual (0,1,2)
-    clr frame                ; imagen actual dentro del par (0 o 1)
-    clr flags                ; flags de boton presionado (bit0=INT0, bit1=INT1)
+    clr row
+    clr pair
+    clr frame
+    clr flags
     clr cntlo
-    clr cnthi                ; contador de overflows de Timer0 (para el parpadeo)
+    clr cnthi
 
-    ; --- interrupciones externas por flanco de bajada ---
     ldi temp, (1<<ISC01)|(1<<ISC11)
     sts EICRA, temp
     ldi temp, (1<<INT0)|(1<<INT1)
     out EIMSK, temp
 
-    ; --- Timer0: prescaler 64 -> overflow cada ~1ms a 16MHz ---
     clr temp
     out TCCR0A, temp
     ldi temp, (1<<CS01)|(1<<CS00)
@@ -86,15 +81,190 @@ RESET:
 
     sei
 
-; --- stubs temporales: se completan en los proximos commits ---
+; ================= LOOP PRINCIPAL =================
 MAIN:
+    sbrc flags, 0
+    rjmp CHECK_BTN0
+    rjmp CHK1
+CHECK_BTN0:
+    sbic PIND, 2
+    rcall REENABLE0
+CHK1:
+    sbrc flags, 1
+    rjmp CHECK_BTN1
+    rjmp MAIN
+CHECK_BTN1:
+    sbic PIND, 3
+    rcall REENABLE1
     rjmp MAIN
 
+REENABLE0:
+    cli
+    inc pair
+    cpi pair, 3
+    brne RE0_OK
+    clr pair
+RE0_OK:
+    clr frame
+    clr cntlo
+    clr cnthi
+    cbr flags, (1<<0)
+    sei
+    sbi EIFR, INTF0
+    sbi EIMSK, INT0
+    ret
+
+REENABLE1:
+    cli
+    tst pair
+    brne RE1_DEC
+    ldi pair, 2
+    rjmp RE1_OK
+RE1_DEC:
+    dec pair
+RE1_OK:
+    clr frame
+    clr cntlo
+    clr cnthi
+    cbr flags, (1<<1)
+    sei
+    sbi EIFR, INTF1
+    sbi EIMSK, INT1
+    ret
+
+; ================= INTERRUPCIONES EXTERNAS =================
 INT0_ISR:
+    cbi EIMSK, INT0
+    sbr flags, (1<<0)
     reti
 
 INT1_ISR:
+    cbi EIMSK, INT1
+    sbr flags, (1<<1)
     reti
 
+; ================= REFRESCO POR MULTIPLEXADO (Timer0) =================
+; Se ejecuta cada overflow de Timer0 (~1ms). En cada llamada:
 TIM0_ISR:
+    in temp3, SREG
+    push temp
+    push temp2
+    push rowbits
+    push r30
+    push r31
+
+    ; --- (1) anodo en bajo por defecto (inactivo) ---
+    in temp, PORTD
+    andi temp, 0x0F
+    out PORTD, temp
+    in temp, PORTB
+    andi temp, 0xF0
+    out PORTB, temp
+
+    ; --- (2) leer bitmap de la fila actual desde flash ---
+    ; direccion = BITMAPS + pair*16 + frame*8 + row
+    ldi r30, low(BITMAPS*2)
+    ldi r31, high(BITMAPS*2)
+    mov temp, pair
+    lsl temp
+    lsl temp
+    lsl temp
+    lsl temp                ; pair*16
+    add r30, temp
+    clr temp
+    adc r31, temp
+    mov temp, frame
+    lsl temp
+    lsl temp
+    lsl temp                ; frame*8
+    add r30, temp
+    clr temp
+    adc r31, temp
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm rowbits, Z
+
+    ; --- (3) bit=1 (encendido) -> catodo en bajo ---
+    com rowbits
+
+    ; --- (4) escribir columnas ---
+    mov temp, rowbits
+    lsr temp
+    lsr temp
+    andi temp, 0x3F
+    out PORTC, temp          ; catodo 2-7
+
+    mov temp, rowbits
+    andi temp, 0x03
+    swap temp
+    in temp2, PORTB
+    andi temp2, 0x0F
+    or temp2, temp
+    out PORTB, temp2         ; catodo 0-1
+
+    ; --- (5) anodo activo en alto (fila seleccionada) ---
+    ldi r30, low(ROWMASK_D_OR*2)
+    ldi r31, high(ROWMASK_D_OR*2)
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm temp, Z
+    in temp2, PORTD
+    or temp2, temp
+    out PORTD, temp2
+
+    ldi r30, low(ROWMASK_B_OR*2)
+    ldi r31, high(ROWMASK_B_OR*2)
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm temp, Z
+    in temp2, PORTB
+    or temp2, temp
+    out PORTB, temp2
+
+    ; --- (6) siguiente fila (0..7, circular) ---
+    inc row
+    cpi row, 8
+    brne TIM0_CONT
+    clr row
+TIM0_CONT:
+
+    ; --- (7) contador de overflows para alternar frame (~500ms) ---
+    inc cntlo
+    brne TIM0_NOCARRY
+    inc cnthi
+TIM0_NOCARRY:
+    ldi temp, BLINKTH_LO
+    cp cntlo, temp
+    ldi temp, BLINKTH_HI
+    cpc cnthi, temp
+    brlo TIM0_END
+    clr cntlo
+    clr cnthi
+    ldi temp, 1
+    eor frame, temp          ; alterna 0<->1 (efecto guiño/parpadeo)
+TIM0_END:
+    pop r31
+    pop r30
+    pop rowbits
+    pop temp2
+    pop temp
+    out SREG, temp3
     reti
+
+; ================= TABLAS DE FIGURAS =================
+BITMAPS:
+.db 0x3C,0x42,0xA5,0x81,0x81,0xBD,0x42,0x3C   ; sonriendo
+.db 0x3C,0x62,0x85,0x81,0x81,0xBD,0x42,0x3C   ; guiñando (version inicial)
+.db 0x66,0xFF,0xFF,0xFF,0x7E,0x3C,0x18,0x00   ; corazon
+.db 0x00,0x42,0x00,0x00,0x00,0x24,0x18,0x00   ; :3 (version inicial)
+.db 0x81,0x42,0x24,0x18,0x18,0x24,0x42,0x81   ; asterisco (version inicial, solo X)
+.db 0x00,0x42,0x24,0x00,0x00,0x7E,0x7E,0x3C   ; XD (version inicial)
+
+; --- mascaras OR para activar (en alto) el anodo de la fila "row" ---
+ROWMASK_D_OR:
+.db 0x10,0x20,0x40,0x80,0x00,0x00,0x00,0x00   ; filas 0-3 (PD4-PD7)
+ROWMASK_B_OR:
+.db 0x00,0x00,0x00,0x00,0x01,0x02,0x04,0x08   ; filas 4-7 (PB0-PB3)
