@@ -82,48 +82,43 @@ RESET:
     sei
 
 ; ================= LOOP PRINCIPAL =================
-; El main no hace nada mas que sondear las flags que levantan las ISR
-; de los botones (bit0=INT0, bit1=INT1) y, cuando el boton se solto,
-; llama a la rutina que avanza/retrocede de par y reactiva la interrupcion.
 MAIN:
     sbrc flags, 0
     rjmp CHECK_BTN0
     rjmp CHK1
 CHECK_BTN0:
-    sbic PIND, 2          ; espera a que se suelte el boton (antirrebote)
+    sbic PIND, 2
     rcall REENABLE0
 CHK1:
     sbrc flags, 1
     rjmp CHECK_BTN1
     rjmp MAIN
 CHECK_BTN1:
-    sbic PIND, 3          ; espera a que se suelte el boton (antirrebote)
+    sbic PIND, 3
     rcall REENABLE1
     rjmp MAIN
 
-; --- avanza al siguiente par y reactiva INT0 ---
 REENABLE0:
     cli
     inc pair
     cpi pair, 3
     brne RE0_OK
-    clr pair               ; vuelve a 0 despues del ultimo par
+    clr pair
 RE0_OK:
-    clr frame               ; reinicia en la 1ra imagen del par nuevo
+    clr frame
     clr cntlo
-    clr cnthi                ; reinicia el contador de parpadeo
+    clr cnthi
     cbr flags, (1<<0)
     sei
-    sbi EIFR, INTF0          ; limpia flag de interrupcion pendiente
-    sbi EIMSK, INT0          ; reactiva INT0
+    sbi EIFR, INTF0
+    sbi EIMSK, INT0
     ret
 
-; --- retrocede al par anterior y reactiva INT1 ---
 REENABLE1:
     cli
     tst pair
     brne RE1_DEC
-    ldi pair, 2              ; si estaba en 0, da la vuelta al ultimo par
+    ldi pair, 2
     rjmp RE1_OK
 RE1_DEC:
     dec pair
@@ -138,9 +133,6 @@ RE1_OK:
     ret
 
 ; ================= INTERRUPCIONES EXTERNAS =================
-; Solo enmascaran su propia interrupcion y levantan la flag;
-; el trabajo real (avanzar/retroceder) lo hace el main loop
-; una vez que confirma que el boton ya se solto (antirrebote).
 INT0_ISR:
     cbi EIMSK, INT0
     sbr flags, (1<<0)
@@ -151,6 +143,128 @@ INT1_ISR:
     sbr flags, (1<<1)
     reti
 
-; --- stub temporal: se completa en el proximo commit ---
+; ================= REFRESCO POR MULTIPLEXADO (Timer0) =================
+; Se ejecuta cada overflow de Timer0 (~1ms). En cada llamada:
 TIM0_ISR:
+    in temp3, SREG
+    push temp
+    push temp2
+    push rowbits
+    push r30
+    push r31
+
+    ; --- (1) anodo en bajo por defecto (inactivo) ---
+    in temp, PORTD
+    andi temp, 0x0F
+    out PORTD, temp
+    in temp, PORTB
+    andi temp, 0xF0
+    out PORTB, temp
+
+    ; --- (2) leer bitmap de la fila actual desde flash ---
+    ; direccion = BITMAPS + pair*16 + frame*8 + row
+    ldi r30, low(BITMAPS*2)
+    ldi r31, high(BITMAPS*2)
+    mov temp, pair
+    lsl temp
+    lsl temp
+    lsl temp
+    lsl temp                ; pair*16
+    add r30, temp
+    clr temp
+    adc r31, temp
+    mov temp, frame
+    lsl temp
+    lsl temp
+    lsl temp                ; frame*8
+    add r30, temp
+    clr temp
+    adc r31, temp
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm rowbits, Z
+
+    ; --- (3) bit=1 (encendido) -> catodo en bajo ---
+    com rowbits
+
+    ; --- (4) escribir columnas ---
+    mov temp, rowbits
+    lsr temp
+    lsr temp
+    andi temp, 0x3F
+    out PORTC, temp          ; catodo 2-7
+
+    mov temp, rowbits
+    andi temp, 0x03
+    swap temp
+    in temp2, PORTB
+    andi temp2, 0x0F
+    or temp2, temp
+    out PORTB, temp2         ; catodo 0-1
+
+    ; --- (5) anodo activo en alto (fila seleccionada) ---
+    ldi r30, low(ROWMASK_D_OR*2)
+    ldi r31, high(ROWMASK_D_OR*2)
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm temp, Z
+    in temp2, PORTD
+    or temp2, temp
+    out PORTD, temp2
+
+    ldi r30, low(ROWMASK_B_OR*2)
+    ldi r31, high(ROWMASK_B_OR*2)
+    add r30, row
+    clr temp
+    adc r31, temp
+    lpm temp, Z
+    in temp2, PORTB
+    or temp2, temp
+    out PORTB, temp2
+
+    ; --- (6) siguiente fila (0..7, circular) ---
+    inc row
+    cpi row, 8
+    brne TIM0_CONT
+    clr row
+TIM0_CONT:
+
+    ; --- (7) contador de overflows para alternar frame (~500ms) ---
+    inc cntlo
+    brne TIM0_NOCARRY
+    inc cnthi
+TIM0_NOCARRY:
+    ldi temp, BLINKTH_LO
+    cp cntlo, temp
+    ldi temp, BLINKTH_HI
+    cpc cnthi, temp
+    brlo TIM0_END
+    clr cntlo
+    clr cnthi
+    ldi temp, 1
+    eor frame, temp          ; alterna 0<->1 (efecto guiño/parpadeo)
+TIM0_END:
+    pop r31
+    pop r30
+    pop rowbits
+    pop temp2
+    pop temp
+    out SREG, temp3
     reti
+
+; ================= TABLAS DE FIGURAS (PLACEHOLDER) =================
+BITMAPS:
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+.db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+; --- mascaras OR para activar (en alto) el anodo de la fila "row" ---
+ROWMASK_D_OR:
+.db 0x10,0x20,0x40,0x80,0x00,0x00,0x00,0x00   ; filas 0-3 (PD4-PD7)
+ROWMASK_B_OR:
+.db 0x00,0x00,0x00,0x00,0x01,0x02,0x04,0x08   ; filas 4-7 (PB0-PB3)
