@@ -1,0 +1,100 @@
+; ============================================================
+; Mapeo de pines (grupo ANODO = activo en ALTO, con resistencia
+;                  grupo CATODO = activo en BAJO, sin resistencia)
+;
+;   ANODO  (filas del codigo):
+;     PD4-PD7 = D4-D7   -> anodo 0-3
+;     PB0-PB3 = D8-D11  -> anodo 4-7
+;   CATODO (columnas del codigo):
+;     PB4,PB5 = D12,D13 -> catodo 0-1
+;     PC0-PC5 = A0-A5   -> catodo 2-7
+;
+;   Botones: INT0=PD2 (par siguiente), INT1=PD3 (par anterior), a GND
+; ============================================================
+
+.include "m328Pdef.inc"
+
+.def temp    = r16
+.def temp2   = r17
+.def rowbits = r18
+.def row     = r19
+.def pair    = r20
+.def frame   = r21
+.def flags   = r22
+.def cntlo   = r23
+.def cnthi   = r24
+.def temp3   = r25
+
+.equ BLINKTH_LO = low(480)      ; umbral de overflows de Timer0 para alternar frame (~500ms)
+.equ BLINKTH_HI = high(480)
+
+; ---------------- Vectores de interrupcion ----------------
+.cseg
+.org 0x0000
+    rjmp RESET
+.org 0x0002
+    rjmp INT0_ISR         ; boton "par siguiente"
+.org 0x0004
+    rjmp INT1_ISR         ; boton "par anterior"
+.org 0x0020
+    rjmp TIM0_ISR         ; refresco de matriz + control de parpadeo
+
+; ================= INICIALIZACION =================
+.org 0x0034
+RESET:
+    ldi temp, low(RAMEND)
+    out SPL, temp
+    ldi temp, high(RAMEND)
+    out SPH, temp
+
+    ; --- direcciones de puertos ---
+    ldi temp, 0xF0          ; PD4-7 salida (anodo), PD2-3 entrada (botones)
+    out DDRD, temp
+    ldi temp, 0x3F          ; PB0-5 salida (anodo 4-7 + catodo 0-1)
+    out DDRB, temp
+    ldi temp, 0x3F          ; PC0-5 salida (catodo 2-7)
+    out DDRC, temp
+
+    ; --- pull-up interno en los botones ---
+    ldi temp, 0x0C          ; pull-up en PD2,PD3
+    out PORTD, temp
+    clr temp
+    out PORTB, temp
+    out PORTC, temp
+
+    ; --- variables de estado ---
+    clr row                  ; fila que se esta refrescando (0-7)
+    clr pair                 ; par de imagenes actual (0,1,2)
+    clr frame                ; imagen actual dentro del par (0 o 1)
+    clr flags                ; flags de boton presionado (bit0=INT0, bit1=INT1)
+    clr cntlo
+    clr cnthi                ; contador de overflows de Timer0 (para el parpadeo)
+
+    ; --- interrupciones externas por flanco de bajada ---
+    ldi temp, (1<<ISC01)|(1<<ISC11)
+    sts EICRA, temp
+    ldi temp, (1<<INT0)|(1<<INT1)
+    out EIMSK, temp
+
+    ; --- Timer0: prescaler 64 -> overflow cada ~1ms a 16MHz ---
+    clr temp
+    out TCCR0A, temp
+    ldi temp, (1<<CS01)|(1<<CS00)
+    out TCCR0B, temp
+    ldi temp, (1<<TOIE0)
+    sts TIMSK0, temp
+
+    sei
+
+; --- stubs temporales: se completan en los proximos commits ---
+MAIN:
+    rjmp MAIN
+
+INT0_ISR:
+    reti
+
+INT1_ISR:
+    reti
+
+TIM0_ISR:
+    reti
