@@ -25,7 +25,7 @@
 .def cnthi   = r24
 .def temp3   = r25
 
-.equ BLINKTH_LO = low(480)      ; umbral de overflows de Timer0 para alternar frame (~500ms)
+.equ BLINKTH_LO = low(480)
 .equ BLINKTH_HI = high(480)
 
 ; ---------------- Vectores de interrupcion ----------------
@@ -33,11 +33,11 @@
 .org 0x0000
     rjmp RESET
 .org 0x0002
-    rjmp INT0_ISR         ; boton "par siguiente"
+    rjmp INT0_ISR
 .org 0x0004
-    rjmp INT1_ISR         ; boton "par anterior"
+    rjmp INT1_ISR
 .org 0x0020
-    rjmp TIM0_ISR         ; refresco de matriz + control de parpadeo
+    rjmp TIM0_ISR
 
 ; ================= INICIALIZACION =================
 .org 0x0034
@@ -47,36 +47,31 @@ RESET:
     ldi temp, high(RAMEND)
     out SPH, temp
 
-    ; --- direcciones de puertos ---
-    ldi temp, 0xF0          ; PD4-7 salida (anodo), PD2-3 entrada (botones)
+    ldi temp, 0xF0
     out DDRD, temp
-    ldi temp, 0x3F          ; PB0-5 salida (anodo 4-7 + catodo 0-1)
+    ldi temp, 0x3F
     out DDRB, temp
-    ldi temp, 0x3F          ; PC0-5 salida (catodo 2-7)
+    ldi temp, 0x3F
     out DDRC, temp
 
-    ; --- pull-up interno en los botones ---
-    ldi temp, 0x0C          ; pull-up en PD2,PD3
+    ldi temp, 0x0C
     out PORTD, temp
     clr temp
     out PORTB, temp
     out PORTC, temp
 
-    ; --- variables de estado ---
-    clr row                  ; fila que se esta refrescando (0-7)
-    clr pair                 ; par de imagenes actual (0,1,2)
-    clr frame                ; imagen actual dentro del par (0 o 1)
-    clr flags                ; flags de boton presionado (bit0=INT0, bit1=INT1)
+    clr row
+    clr pair
+    clr frame
+    clr flags
     clr cntlo
-    clr cnthi                ; contador de overflows de Timer0 (para el parpadeo)
+    clr cnthi
 
-    ; --- interrupciones externas por flanco de bajada ---
     ldi temp, (1<<ISC01)|(1<<ISC11)
     sts EICRA, temp
     ldi temp, (1<<INT0)|(1<<INT1)
     out EIMSK, temp
 
-    ; --- Timer0: prescaler 64 -> overflow cada ~1ms a 16MHz ---
     clr temp
     out TCCR0A, temp
     ldi temp, (1<<CS01)|(1<<CS00)
@@ -86,15 +81,76 @@ RESET:
 
     sei
 
-; --- stubs temporales: se completan en los proximos commits ---
+; ================= LOOP PRINCIPAL =================
+; El main no hace nada mas que sondear las flags que levantan las ISR
+; de los botones (bit0=INT0, bit1=INT1) y, cuando el boton se solto,
+; llama a la rutina que avanza/retrocede de par y reactiva la interrupcion.
 MAIN:
+    sbrc flags, 0
+    rjmp CHECK_BTN0
+    rjmp CHK1
+CHECK_BTN0:
+    sbic PIND, 2          ; espera a que se suelte el boton (antirrebote)
+    rcall REENABLE0
+CHK1:
+    sbrc flags, 1
+    rjmp CHECK_BTN1
+    rjmp MAIN
+CHECK_BTN1:
+    sbic PIND, 3          ; espera a que se suelte el boton (antirrebote)
+    rcall REENABLE1
     rjmp MAIN
 
+; --- avanza al siguiente par y reactiva INT0 ---
+REENABLE0:
+    cli
+    inc pair
+    cpi pair, 3
+    brne RE0_OK
+    clr pair               ; vuelve a 0 despues del ultimo par
+RE0_OK:
+    clr frame               ; reinicia en la 1ra imagen del par nuevo
+    clr cntlo
+    clr cnthi                ; reinicia el contador de parpadeo
+    cbr flags, (1<<0)
+    sei
+    sbi EIFR, INTF0          ; limpia flag de interrupcion pendiente
+    sbi EIMSK, INT0          ; reactiva INT0
+    ret
+
+; --- retrocede al par anterior y reactiva INT1 ---
+REENABLE1:
+    cli
+    tst pair
+    brne RE1_DEC
+    ldi pair, 2              ; si estaba en 0, da la vuelta al ultimo par
+    rjmp RE1_OK
+RE1_DEC:
+    dec pair
+RE1_OK:
+    clr frame
+    clr cntlo
+    clr cnthi
+    cbr flags, (1<<1)
+    sei
+    sbi EIFR, INTF1
+    sbi EIMSK, INT1
+    ret
+
+; ================= INTERRUPCIONES EXTERNAS =================
+; Solo enmascaran su propia interrupcion y levantan la flag;
+; el trabajo real (avanzar/retroceder) lo hace el main loop
+; una vez que confirma que el boton ya se solto (antirrebote).
 INT0_ISR:
+    cbi EIMSK, INT0
+    sbr flags, (1<<0)
     reti
 
 INT1_ISR:
+    cbi EIMSK, INT1
+    sbr flags, (1<<1)
     reti
 
+; --- stub temporal: se completa en el proximo commit ---
 TIM0_ISR:
     reti
