@@ -6,6 +6,7 @@
 ;   PB0 - LED de prueba bit0
 ;   PB1 - LED de prueba bit1
 ;   PB2 - LED de prueba bit2
+;   PD1 - TXD (USART, manejado por hardware)
 ;================================================================
 .include "m328Pdef.inc"
 .org 0x0000
@@ -24,11 +25,13 @@ RESET:
     out DDRD, r16
     ldi r16, 0b00011100
     out PORTD, r16
-    ; --- LEDs de prueba en PB0:PB2 como salida ---    
-	ldi r16, 0b00000111
+    ; --- LEDs de prueba en PB0:PB2 como salida ---
+    ldi r16, 0b00000111
     out DDRB, r16
     clr r16
     out PORTB, r16
+    ; --- Configurar USART: 9600 baudios, 8N1 ---
+    rcall USART_INIT
     ; --- Inicializar variables ---
     clr r17                     ; ultimo valor estable
     clr r18                     ; ultima lectura cruda
@@ -57,6 +60,12 @@ MAIN_LOOP:
     breq MAIN_LOOP
     mov r17, r20
     out PORTB, r17              ; LEDs de prueba muestran el valor leido
+    ; --- Transmitir el valor por USART ---
+TX_WAIT:
+    lds r16, UCSR0A
+    sbrs r16, UDRE0
+    rjmp TX_WAIT
+    sts UDR0, r17
     rjmp MAIN_LOOP
 ;================================================================
 ; Subrutina delay (~20 ms)
@@ -71,4 +80,17 @@ DELAY_INNER:
     brne DELAY_INNER
     dec r21
     brne DELAY_OUTER
+    ret
+;================================================================
+; USART_INIT: 9600 baudios, 8 bits, 16MHz
+;================================================================
+USART_INIT:
+    ldi r16, high(103)
+    sts UBRR0H, r16
+    ldi r16, low(103)
+    sts UBRR0L, r16
+    ldi r16, (1<<TXEN0)
+    sts UCSR0B, r16
+    ldi r16, (1<<UCSZ01)|(1<<UCSZ00)
+    sts UCSR0C, r16
     ret
