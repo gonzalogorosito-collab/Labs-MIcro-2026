@@ -1,1 +1,74 @@
-
+;================================================================
+; Mapeo de pines:
+;   PD2 - Pulsador bit0 (LSB)
+;   PD3 - Pulsador bit1
+;   PD4 - Pulsador bit2 (MSB)
+;   PB0 - LED de prueba bit0
+;   PB1 - LED de prueba bit1
+;   PB2 - LED de prueba bit2
+;================================================================
+.include "m328Pdef.inc"
+.org 0x0000
+    rjmp RESET
+;================================================================
+; Programa principal
+;================================================================
+RESET:
+    ; --- Stack Pointer ---
+    ldi r16, low(RAMEND)
+    out SPL, r16
+    ldi r16, high(RAMEND)
+    out SPH, r16
+    ; --- Pulsadores en PD2:PD4 como entrada con pull-up ---
+    ldi r16, 0b00000000
+    out DDRD, r16
+    ldi r16, 0b00011100
+    out PORTD, r16
+    ; --- LEDs de prueba en PB0:PB2 como salida ---    
+	ldi r16, 0b00000111
+    out DDRB, r16
+    clr r16
+    out PORTB, r16
+    ; --- Inicializar variables ---
+    clr r17                     ; ultimo valor estable
+    clr r18                     ; ultima lectura cruda
+MAIN_LOOP:
+    ; --- Leer estado crudo de los pulsadores ---
+    in r19, PIND
+    com r19
+    andi r19, 0b00011100
+    lsr r19
+    lsr r19                     ; r19 = valor de 3 bits (bit2=PD4, bit1=PD3, bit0=PD2)
+    ; --- Verificar si cambio respecto a la ultima lectura cruda ---
+    cp r19, r18
+    breq MAIN_LOOP
+    mov r18, r19
+    ; --- Antirrebote: esperar y releer ---
+    rcall DELAY_20MS
+    in r20, PIND
+    com r20
+    andi r20, 0b00011100
+    lsr r20
+    lsr r20
+    cp r20, r18
+    brne MAIN_LOOP              ; seguia rebotando, descartar
+    ; --- Valor confirmado: actualizar si cambio respecto al ultimo estable ---
+    cp r20, r17
+    breq MAIN_LOOP
+    mov r17, r20
+    out PORTB, r17              ; LEDs de prueba muestran el valor leido
+    rjmp MAIN_LOOP
+;================================================================
+; Subrutina delay (~20 ms)
+;================================================================
+DELAY_20MS:
+    ldi r21, 20
+DELAY_OUTER:
+    ldi r24, low(4000)
+    ldi r25, high(4000)
+DELAY_INNER:
+    sbiw r24, 1
+    brne DELAY_INNER
+    dec r21
+    brne DELAY_OUTER
+    ret
