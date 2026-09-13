@@ -1,1 +1,95 @@
+;=====================================================
+; PLOTTER - Estructura base y temporizaciones
+;=====================================================
 
+.include "m328pdef.inc"
+.CSEG
+.ORG 0x0000
+RJMP Seteo         
+Seteo:
+    ; Inicializar Stack Pointer al final de la SRAM
+    LDI R16, LOW(RAMEND)
+    OUT SPL, R16
+    LDI R16, HIGH(RAMEND)
+    OUT SPH, R16
+	LDI R17, 0xFC
+	OUT DDRD, R17
+
+MainLoop:
+	RCALL Pos
+	RCALL Poliwag
+Main2:
+    RJMP Main2
+
+; --- (1) Temporización base ---
+Mseg:
+	RCALL Mseg_2
+	RCALL Mseg_2
+    NOP
+    RET
+Mseg_2:
+	RCALL Mseg_3
+	RCALL Mseg_3
+    NOP
+    RET
+
+Mseg_3:
+    LDI R21, 63
+    LDI R22, 254
+    LDI R23, 254
+L1:
+    DEC R23
+    BRNE L1
+    DEC R22
+    BRNE L1
+    DEC R21
+    BRNE L1
+    NOP
+    RET
+
+; --- (2) Temporización auxiliar (usada por Cir) ---
+M4:
+	RCALL M1
+	RCALL M1
+	RCALL M1
+	RCALL M1
+    NOP
+    RET
+Mp:
+    LDI R21, 40
+    LDI R22, 254
+    LDI R23, 254
+L3:
+    DEC R23
+    BRNE L3
+    DEC R22
+    BRNE L3
+    DEC R21
+    BRNE L3
+    NOP
+    RET
+
+M2:
+	RCALL M1
+	RCALL M1
+    NOP
+    RET
+M1:
+    LDI R21, 4
+    LDI R22, 254
+    LDI R23, 254
+L4:
+    DEC R23
+    BRNE L4
+    DEC R22
+    BRNE L4
+    DEC R21
+    BRNE L4
+    NOP
+    RET
+M3:
+	RCALL M1
+	RCALL M1
+	RCALL M1
+	NOP
+	RET
