@@ -1,1 +1,81 @@
+; =====================================================================
+; Matriz de LEDS
+; =====================================================================
 
+.include "m328pdef.inc"
+
+.def temp     = r16
+.def temp2    = r17
+.def rowout   = r18
+.def colidx   = r19
+.def fila_idx = r20
+
+.equ SCROLL_LEN = 106
+
+.dseg
+.org 0x0100
+modo:        .byte 1     ; 0=scroll, 1=carita, 2=corazon
+scroll_pos:  .byte 1
+velocidad:   .byte 1
+contador_v:  .byte 1
+
+.cseg
+.org 0x0000
+    rjmp INICIO
+
+.org 0x0020              ; Timer0 Overflow Vector
+    rjmp ISR_TIMER0
+
+.org 0x0024              ; USART RX Vector
+    rjmp ISR_USART_RX
+
+INICIO:
+    ; 1. Stack Pointer
+    ldi    temp, HIGH(RAMEND)
+    out    SPH, temp
+    ldi    temp, LOW(RAMEND)
+    out    SPL, temp
+
+    ; 2. Configurar Puertos como Salidas
+    ldi    temp, 0x3F
+    out    DDRB, temp       ; PB0..PB5 (Pines 8..13)
+
+    in     temp, DDRD
+    ori    temp, 0xFC
+    out    DDRD, temp       ; PD2..PD7 (Pines 2..7)
+
+    ldi    temp, 0x0F
+    out    DDRC, temp       ; PC0..PC3 (Pines A0..A3)
+
+    ; 3. Apagar Matriz al Inicio
+    in     temp, PORTB
+    andi   temp, 0xC0       
+    out    PORTB, temp
+
+    in     temp, PORTC
+    andi   temp, 0xFC       
+    ori    temp, 0x0C       
+    out    PORTC, temp
+
+    in     temp, PORTD
+    ori    temp, 0xFC       
+    out    PORTD, temp
+
+    ; 4. Inicializar Variables
+    clr    temp
+    sts    modo, temp
+    sts    scroll_pos, temp
+    sts    contador_v, temp
+    clr    fila_idx
+
+    ldi    temp, 15
+    sts    velocidad, temp
+
+BUCLE_PRINCIPAL:
+    rjmp BUCLE_PRINCIPAL
+
+ISR_TIMER0:
+    reti
+
+ISR_USART_RX:
+    reti
