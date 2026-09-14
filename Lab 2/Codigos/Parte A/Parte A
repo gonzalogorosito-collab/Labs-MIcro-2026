@@ -14,7 +14,7 @@
 
 .dseg
 .org 0x0100
-modo:        .byte 1     ; 0=scroll, 1=carita, 2=corazon
+modo:        .byte 1
 scroll_pos:  .byte 1
 velocidad:   .byte 1
 contador_v:  .byte 1
@@ -23,45 +23,41 @@ contador_v:  .byte 1
 .org 0x0000
     rjmp INICIO
 
-.org 0x0020              ; Timer0 Overflow Vector
+.org 0x0020
     rjmp ISR_TIMER0
 
-.org 0x0024              ; USART RX Vector
+.org 0x0024
     rjmp ISR_USART_RX
 
 INICIO:
-    ; 1. Stack Pointer
     ldi    temp, HIGH(RAMEND)
     out    SPH, temp
     ldi    temp, LOW(RAMEND)
     out    SPL, temp
 
-    ; 2. Configurar Puertos como Salidas
     ldi    temp, 0x3F
-    out    DDRB, temp       ; PB0..PB5 (Pines 8..13)
+    out    DDRB, temp
 
     in     temp, DDRD
     ori    temp, 0xFC
-    out    DDRD, temp       ; PD2..PD7 (Pines 2..7)
+    out    DDRD, temp
 
     ldi    temp, 0x0F
-    out    DDRC, temp       ; PC0..PC3 (Pines A0..A3)
+    out    DDRC, temp
 
-    ; 3. Apagar Matriz al Inicio
     in     temp, PORTB
-    andi   temp, 0xC0       
+    andi   temp, 0xC0
     out    PORTB, temp
 
     in     temp, PORTC
-    andi   temp, 0xFC       
-    ori    temp, 0x0C       
+    andi   temp, 0xFC
+    ori    temp, 0x0C
     out    PORTC, temp
 
     in     temp, PORTD
-    ori    temp, 0xFC       
+    ori    temp, 0xFC
     out    PORTD, temp
 
-    ; 4. Inicializar Variables
     clr    temp
     sts    modo, temp
     sts    scroll_pos, temp
@@ -71,6 +67,21 @@ INICIO:
     ldi    temp, 15
     sts    velocidad, temp
 
+    ; 5. UART (9600 baudios @ 16 MHz)
+    ldi    temp, HIGH(103)
+    sts    UBRR0H, temp
+    ldi    temp, LOW(103)
+    sts    UBRR0L, temp
+
+    ldi    temp, (1<<RXEN0)|(1<<TXEN0)|(1<<RXCIE0)
+    sts    UCSR0B, temp
+
+    ldi    temp, (1<<UCSZ01)|(1<<UCSZ00)
+    sts    UCSR0C, temp
+
+    ; 6. Imprimir Menú Completo
+    rcall IMPRIMIR_MENU_COMPLETO
+
 BUCLE_PRINCIPAL:
     rjmp BUCLE_PRINCIPAL
 
@@ -79,3 +90,28 @@ ISR_TIMER0:
 
 ISR_USART_RX:
     reti
+
+UART_TX_CHAR:
+    lds    temp2, UCSR0A
+    sbrs   temp2, UDRE0
+    rjmp   UART_TX_CHAR
+    sts    UDR0, temp
+    ret
+
+IMPRIMIR_MENU_COMPLETO:
+    ldi    ZL, LOW(TEXTO_MENU*2)
+    ldi    ZH, HIGH(TEXTO_MENU*2)
+
+LOOP_MENU_TEXTO:
+    lpm    temp, Z+
+    tst    temp
+    breq   FIN_MENU_TEXTO
+    rcall  UART_TX_CHAR
+    rjmp   LOOP_MENU_TEXTO
+
+FIN_MENU_TEXTO:
+    ret
+
+.align 2
+TEXTO_MENU:
+.db "=== MATRIZ LED 8x8 ===", 13, 10, "1. Mensaje en pantalla", 13, 10, "2. Imagen Carita", 13, 10, "3. Imagen Corazon", 13, 10, "+ : Aumentar Velocidad", 13, 10, "- : Disminuir Velocidad", 13, 10, "Opcion: ", 0, 0
