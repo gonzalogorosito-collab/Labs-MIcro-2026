@@ -67,7 +67,6 @@ INICIO:
     ldi    temp, 15
     sts    velocidad, temp
 
-    ; 5. UART (9600 baudios @ 16 MHz)
     ldi    temp, HIGH(103)
     sts    UBRR0H, temp
     ldi    temp, LOW(103)
@@ -79,13 +78,54 @@ INICIO:
     ldi    temp, (1<<UCSZ01)|(1<<UCSZ00)
     sts    UCSR0C, temp
 
-    ; 6. Imprimir Menú Completo
     rcall IMPRIMIR_MENU_COMPLETO
+
+    ; 7. Timer0 Prescaler 256
+    ldi    temp, (1<<CS02)
+    out    TCCR0B, temp
+
+    ldi    temp, (1<<TOIE0)
+    sts    TIMSK0, temp
+
+    sei
 
 BUCLE_PRINCIPAL:
     rjmp BUCLE_PRINCIPAL
 
 ISR_TIMER0:
+    push   temp
+    in     temp, SREG
+    push   temp
+    push   temp2
+    push   rowout
+    push   ZL
+    push   ZH
+
+    ; A. APAGAR FILAS
+    in     temp, PORTB
+    andi   temp, 0xC0
+    out    PORTB, temp
+
+    in     temp, PORTC
+    andi   temp, 0xFC
+    out    PORTC, temp
+
+    ; B. APAGAR COLUMNAS
+    in     temp, PORTD
+    ori    temp, 0xFC
+    out    PORTD, temp
+
+    in     temp, PORTC
+    ori    temp, 0x0C
+    out    PORTC, temp
+
+    pop    ZH
+    pop    ZL
+    pop    rowout
+    pop    temp2
+    pop    temp
+    out    SREG, temp
+    pop    temp
     reti
 
 ISR_USART_RX:
