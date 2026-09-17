@@ -80,7 +80,6 @@ INICIO:
 
     rcall IMPRIMIR_MENU_COMPLETO
 
-    ; 7. Timer0 Prescaler 256
     ldi    temp, (1<<CS02)
     out    TCCR0B, temp
 
@@ -101,7 +100,6 @@ ISR_TIMER0:
     push   ZL
     push   ZH
 
-    ; A. APAGAR FILAS
     in     temp, PORTB
     andi   temp, 0xC0
     out    PORTB, temp
@@ -110,7 +108,6 @@ ISR_TIMER0:
     andi   temp, 0xFC
     out    PORTC, temp
 
-    ; B. APAGAR COLUMNAS
     in     temp, PORTD
     ori    temp, 0xFC
     out    PORTD, temp
@@ -119,6 +116,44 @@ ISR_TIMER0:
     ori    temp, 0x0C
     out    PORTC, temp
 
+    ; C. OBTENER PATRÓN SEGÚN EL MODO
+    lds    temp, modo
+    cpi    temp, 0
+    breq   TMR_MODO_SCROLL
+    cpi    temp, 1
+    breq   TMR_MODO_IMG1
+    rjmp   TMR_MODO_IMG2
+
+TMR_MODO_SCROLL:
+    lds    temp, scroll_pos
+    add    temp, fila_idx
+    cpi    temp, SCROLL_LEN
+    brlo   TMR_SCROLL_OK
+    subi   temp, SCROLL_LEN
+TMR_SCROLL_OK:
+    ldi    ZL, LOW(SCROLL_TABLE*2)
+    ldi    ZH, HIGH(SCROLL_TABLE*2)
+    clr    temp2
+    add    ZL, temp
+    adc    ZH, temp2
+    lpm    rowout, Z
+    rjmp   TMR_DATO_LISTO
+
+TMR_MODO_IMG1:
+    ldi    ZL, LOW(IMG_SMILE*2)
+    ldi    ZH, HIGH(IMG_SMILE*2)
+    rjmp   TMR_IMG_COMUN
+
+TMR_MODO_IMG2:
+    ldi    ZL, LOW(IMG_HEART*2)
+    ldi    ZH, HIGH(IMG_HEART*2)
+TMR_IMG_COMUN:
+    clr    temp2
+    add    ZL, fila_idx
+    adc    ZH, temp2
+    lpm    rowout, Z
+
+TMR_DATO_LISTO:
     pop    ZH
     pop    ZL
     pop    rowout
@@ -141,17 +176,42 @@ UART_TX_CHAR:
 IMPRIMIR_MENU_COMPLETO:
     ldi    ZL, LOW(TEXTO_MENU*2)
     ldi    ZH, HIGH(TEXTO_MENU*2)
-
 LOOP_MENU_TEXTO:
     lpm    temp, Z+
     tst    temp
     breq   FIN_MENU_TEXTO
     rcall  UART_TX_CHAR
     rjmp   LOOP_MENU_TEXTO
-
 FIN_MENU_TEXTO:
     ret
 
 .align 2
 TEXTO_MENU:
 .db "=== MATRIZ LED 8x8 ===", 13, 10, "1. Mensaje en pantalla", 13, 10, "2. Imagen Carita", 13, 10, "3. Imagen Corazon", 13, 10, "+ : Aumentar Velocidad", 13, 10, "- : Disminuir Velocidad", 13, 10, "Opcion: ", 0, 0
+
+.align 2
+SCROLL_TABLE:
+.db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+.db 0x7F,0x02,0x0C,0x02,0x7F,0x00
+.db 0x00,0x41,0x7F,0x41,0x00,0x00
+.db 0x3E,0x41,0x41,0x41,0x22,0x00
+.db 0x7F,0x09,0x19,0x29,0x46,0x00
+.db 0x3E,0x41,0x41,0x41,0x3E,0x00
+.db 0x46,0x49,0x49,0x49,0x31,0x00
+.db 0x00,0x00,0x00,0x7F,0x40,0x40
+.db 0x40,0x40,0x00,0x3E,0x41,0x41
+.db 0x41,0x3E,0x00,0x00,0x00,0x00
+.db 0x7F,0x02,0x0C,0x02,0x7F,0x00
+.db 0x7F,0x49,0x49,0x49,0x41,0x00
+.db 0x20,0x40,0x41,0x41,0x3F,0x00
+.db 0x3E,0x41,0x41,0x41,0x3E,0x00
+.db 0x7F,0x09,0x19,0x29,0x46,0x00
+.db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+
+.align 2
+IMG_SMILE:
+.db 0x3C,0x42,0xA5,0x81,0xC3,0x3C,0x42,0x3C
+
+.align 2
+IMG_HEART:
+.db 0x66,0xFF,0xFF,0xFF,0x7E,0x3C,0x18,0x00
