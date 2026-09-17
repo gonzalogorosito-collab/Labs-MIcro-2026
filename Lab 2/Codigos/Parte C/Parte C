@@ -184,4 +184,219 @@ tri:
 	RCALL Mseg
 	LDI R17, 0X00
 	OUT PORTD, R17
+	RET;=====================================================
+; PLOTTER - Estructura base y temporizaciones
+;=====================================================
+
+.include "m328pdef.inc"
+.CSEG
+.ORG 0x0000
+RJMP Seteo         
+Seteo:
+    ; Inicializar Stack Pointer al final de la SRAM
+    LDI R16, LOW(RAMEND)
+    OUT SPL, R16
+    LDI R16, HIGH(RAMEND)
+    OUT SPH, R16
+	LDI R17, 0xFC
+	OUT DDRD, R17
+
+MainLoop:
+	RCALL Pos
+	RCALL Poliwag
+Main2:
+    RJMP Main2
+
+; --- (1) Temporización base ---
+Mseg:
+	RCALL Mseg_2
+	RCALL Mseg_2
+    NOP
+    RET
+Mseg_2:
+	RCALL Mseg_3
+	RCALL Mseg_3
+    NOP
+    RET
+
+Mseg_3:
+    LDI R21, 63
+    LDI R22, 254
+    LDI R23, 254
+L1:
+    DEC R23
+    BRNE L1
+    DEC R22
+    BRNE L1
+    DEC R21
+    BRNE L1
+    NOP
+    RET
+
+; --- (2) Temporización auxiliar (usada por Cir) ---
+M4:
+	RCALL M1
+	RCALL M1
+	RCALL M1
+	RCALL M1
+    NOP
+    RET
+Mp:
+    LDI R21, 40
+    LDI R22, 254
+    LDI R23, 254
+L3:
+    DEC R23
+    BRNE L3
+    DEC R22
+    BRNE L3
+    DEC R21
+    BRNE L3
+    NOP
+    RET
+
+M2:
+	RCALL M1
+	RCALL M1
+    NOP
+    RET
+M1:
+    LDI R21, 4
+    LDI R22, 254
+    LDI R23, 254
+L4:
+    DEC R23
+    BRNE L4
+    DEC R22
+    BRNE L4
+    DEC R21
+    BRNE L4
+    NOP
+    RET
+M3:
+	RCALL M1
+	RCALL M1
+	RCALL M1
+	NOP
 	RET
+
+; --- (3) Posición inicial del plotter ---
+Pos:
+	LDI R17, 0X00
+	LDI R17, 0X80
+	OUT PORTD, R17
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	LDI R17, 0X10
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	RET
+
+; --- (4) Movimientos básicos ---
+AB:
+	LDI R17, 0X00
+	LDI R17, 0X14
+	OUT PORTD, R17
+	RET
+DER:
+	LDI R17, 0X00
+	LDI R17, 0X44
+	OUT PORTD, R17
+	RET
+IZQ:
+	LDI R17, 0X00
+	LDI R17, 0X84
+	OUT PORTD, R17
+	RET
+AR:
+	LDI R17, 0X00
+	LDI R17, 0X24
+	OUT PORTD, R17
+	RET
+ARS:
+	LDI R17, 0X00
+	LDI R17, 0X20
+	OUT PORTD, R17
+	RET
+
+; --- (5) Movimientos diagonales ---
+DER_AB:
+	LDI R17, 0X54    
+	OUT PORTD, R17
+	RET
+
+IZQ_AB:
+	LDI R17, 0X94    
+	OUT PORTD, R17
+	RET
+
+DER_AR:
+	LDI R17, 0X64    
+	OUT PORTD, R17
+	RET
+
+IZQ_AR:
+	LDI R17, 0XA4   
+	OUT PORTD, R17
+	RET
+
+; --- (6) Figura: Triángulo ---
+tri:
+	LDI R17, 0X00
+	LDI R17, 0X04
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	LDI R17, 0X14
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	LDI R17, 0X44
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	LDI R17, 0XA4
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	RET
+
+; --- (7) Figura: Casa ---
+Casa:
+    LDI R17, 0X04
+	OUT PORTD, R17
+	RCALL Mseg
+
+	RCALL AB
+	RCALL Mseg_2
+
+	RCALL IZQ
+	RCALL Mseg_2
+
+	RCALL AR
+	RCALL Mseg_2
+
+	RCALL DER
+	RCALL Mseg_2
+
+	RCALL IZQ_AR
+	RCALL Mseg_3
+
+	RCALL IZQ_AB
+	RCALL Mseg_3
+	
+	LDI R17, 0X08
+	OUT PORTD, R17
+    RET
+
