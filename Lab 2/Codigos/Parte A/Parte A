@@ -116,7 +116,6 @@ ISR_TIMER0:
     ori    temp, 0x0C
     out    PORTC, temp
 
-    ; C. OBTENER PATRÓN SEGÚN EL MODO
     lds    temp, modo
     cpi    temp, 0
     breq   TMR_MODO_SCROLL
@@ -154,6 +153,85 @@ TMR_IMG_COMUN:
     lpm    rowout, Z
 
 TMR_DATO_LISTO:
+    mov    temp, rowout
+    com    temp
+
+    mov    temp2, temp
+    lsl    temp2
+    lsl    temp2
+    andi   temp2, 0xFC
+    in     rowout, PORTD
+    andi   rowout, 0x03
+    or     rowout, temp2
+    out    PORTD, rowout
+
+    mov    temp2, temp
+    lsr    temp2
+    lsr    temp2
+    lsr    temp2
+    lsr    temp2
+    andi   temp2, 0x0C
+    in     rowout, PORTC
+    andi   rowout, 0xF3
+    or     rowout, temp2
+    out    PORTC, temp2
+
+    cpi    fila_idx, 0
+    breq   F0_ON
+    cpi    fila_idx, 1
+    breq   F1_ON
+    cpi    fila_idx, 2
+    breq   F2_ON
+    cpi    fila_idx, 3
+    breq   F3_ON
+    cpi    fila_idx, 4
+    breq   F4_ON
+    cpi    fila_idx, 5
+    breq   F5_ON
+    cpi    fila_idx, 6
+    breq   F6_ON
+    cpi    fila_idx, 7
+    breq   F7_ON
+    rjmp   SIG_FILA
+
+F0_ON: sbi PORTB, 0 \ rjmp SIG_FILA
+F1_ON: sbi PORTB, 1 \ rjmp SIG_FILA
+F2_ON: sbi PORTB, 2 \ rjmp SIG_FILA
+F3_ON: sbi PORTB, 3 \ rjmp SIG_FILA
+F4_ON: sbi PORTB, 4 \ rjmp SIG_FILA
+F5_ON: sbi PORTB, 5 \ rjmp SIG_FILA
+F6_ON: sbi PORTC, 0 \ rjmp SIG_FILA
+F7_ON: sbi PORTC, 1 \ rjmp SIG_FILA
+
+SIG_FILA:
+    inc    fila_idx
+    cpi    fila_idx, 8
+    brlo   TMR_FIN_ISR
+    clr    fila_idx
+
+    lds    temp, contador_v
+    inc    temp
+    lds    temp2, velocidad
+    cp     temp, temp2
+    brlo   TMR_GUARDAR_CONTADOR
+
+    clr    temp
+    lds    temp2, modo
+    cpi    temp2, 0
+    brne   TMR_GUARDAR_CONTADOR
+
+    lds    temp2, scroll_pos
+    inc    temp2
+    cpi    temp2, SCROLL_LEN
+    brlo   TMR_GUARDAR_SCROLLPOS
+    clr    temp2
+
+TMR_GUARDAR_SCROLLPOS:
+    sts    scroll_pos, temp2
+TMR_GUARDAR_CONTADOR:
+    sts    contador_v, temp
+
+TMR_FIN_ISR:
     pop    ZH
     pop    ZL
     pop    rowout
