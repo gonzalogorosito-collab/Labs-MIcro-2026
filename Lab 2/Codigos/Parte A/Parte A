@@ -242,6 +242,57 @@ TMR_FIN_ISR:
     reti
 
 ISR_USART_RX:
+    push   temp
+    in     temp, SREG
+    push   temp
+    push   temp2
+
+    lds    temp, UDR0
+
+    cpi    temp, '1'
+    brne   RX_CHK2
+    clr    temp2
+    sts    modo, temp2
+    rjmp   RX_FIN
+
+RX_CHK2:
+    cpi    temp, '2'
+    brne   RX_CHK3
+    ldi    temp2, 1
+    sts    modo, temp2
+    rjmp   RX_FIN
+
+RX_CHK3:
+    cpi    temp, '3'
+    brne   RX_CHKMAS
+    ldi    temp2, 2
+    sts    modo, temp2
+    rjmp   RX_FIN
+
+RX_CHKMAS:
+    cpi    temp, '+'
+    brne   RX_CHKMENOS
+    lds    temp2, velocidad
+    cpi    temp2, 2
+    brlo   RX_FIN
+    dec    temp2
+    sts    velocidad, temp2
+    rjmp   RX_FIN
+
+RX_CHKMENOS:
+    cpi    temp, '-'
+    brne   RX_FIN
+    lds    temp2, velocidad
+    cpi    temp2, 60
+    brsh   RX_FIN
+    inc    temp2
+    sts    velocidad, temp2
+
+RX_FIN:
+    pop    temp2
+    pop    temp
+    out    SREG, temp
+    pop    temp
     reti
 
 UART_TX_CHAR:
