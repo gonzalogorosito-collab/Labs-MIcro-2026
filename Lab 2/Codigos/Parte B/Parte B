@@ -1,1 +1,28 @@
+.include "m328pdef.inc"
 
+.equ F_CPU = 16000000
+
+.org 0x0000
+    jmp reset
+
+reset:
+    ; 1. Configuración del Stack Pointer
+    ldi r16, LOW(RAMEND)
+    out SPL, r16
+    ldi r16, HIGH(RAMEND)
+    out SPH, r16
+
+    ; 2. Configuración de Puertos E/S (DAC R-2R)
+    ldi r16, 0xFE
+    out DDRD, r16
+    ldi r16, 0x03
+    out DDRB, r16
+
+    ; --- Configuración de Botones en PC0 (A0) y PC1 (A1) con Pull-Ups ---
+    ldi r16, 0x00
+    out DDRC, r16       
+    ldi r16, (1<<PC0) | (1<<PC1)
+    out PORTC, r16      
+
+bucle_principal:
+    rjmp bucle_principal
