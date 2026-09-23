@@ -1,11 +1,17 @@
 ;================================================================
-; Mapeo de pines:
+; Mapeo de pines (Problema E, paso 2 - maquina de estados + sensores):
 ;   PD0 - RXD (USART, manejado por hardware) - comandos del control remoto
 ;   PD4 - LED motor abriendo
 ;   PD5 - LED motor cerrando
-;   (Los sensores se agregaran mas adelante en PORTC, para no
-;    mezclar entradas con las salidas de este puerto)
+;   PC1 - Sensor puerta cerrada (pulsador, pull-up)
+;   PC2 - Sensor puerta abierta (pulsador, pull-up)
+;   (El sensor de obstaculo en PC0 se agrega en un paso posterior)
 ;================================================================
+.equ ST_CERRADA  = 0
+.equ ST_ABRIENDO = 1
+.equ ST_ABIERTA  = 2
+.equ ST_CERRANDO = 3
+
 .include "m328Pdef.inc"
 .org 0x0000
     rjmp RESET
@@ -18,6 +24,7 @@ RESET:
     out SPL, r16
     ldi r16, high(RAMEND)
     out SPH, r16
+    clr r1                          ; registro cero para direccionar la LUT
 
     ; --- PD4:PD5 como salida ---
     ldi r16, 0b00110000
@@ -25,31 +32,76 @@ RESET:
     clr r16
     out PORTD, r16
 
+    ; --- PC1:PC2 como entrada con pull-up ---
+    ldi r16, 0b00000000
+    out DDRC, r16
+    ldi r16, 0b00000110
+    out PORTC, r16
+
     ; --- Configurar USART: 9600 baudios, 8N1, solo recepcion ---
     rcall USART_INIT
 
+    ; --- Estado inicial: puerta cerrada ---
+    ldi r17, ST_CERRADA
+    rcall ACTUALIZAR_SALIDAS
+
 MAIN_LOOP:
-    ; --- Esperar comando por USART ---
+    ; --- Verificar si llego un comando por USART ---
     lds r16, UCSR0A
     sbrs r16, RXC0
-    rjmp MAIN_LOOP
+    rjmp CHECK_SENSORES
     lds r18, UDR0
 
+    ; --- CERRADA + comando 'A' -> ABRIENDO ---
+    cpi r17, ST_CERRADA
+    brne CHECK_C_ABIERTA
     cpi r18, 'A'
-    breq COMANDO_ABRIR
+    brne CHECK_SENSORES
+    ldi r17, ST_ABRIENDO
+    rcall ACTUALIZAR_SALIDAS
+    rjmp MAIN_LOOP
+
+CHECK_C_ABIERTA:
+    ; --- ABIERTA + comando 'C' -> CERRANDO ---
+    cpi r17, ST_ABIERTA
+    brne CHECK_SENSORES
     cpi r18, 'C'
-    breq COMANDO_CERRAR
+    brne CHECK_SENSORES
+    ldi r17, ST_CERRANDO
+    rcall ACTUALIZAR_SALIDAS
     rjmp MAIN_LOOP
 
-COMANDO_ABRIR:
-    sbi PORTD, 4
-    cbi PORTD, 5
+CHECK_SENSORES:
+    ; --- ABRIENDO + sensor puerta abierta -> ABIERTA ---
+    cpi r17, ST_ABRIENDO
+    brne CHECK_SENSOR_CERRADA
+    sbic PINC, 2                    ; activo en bajo (pull-up)
+    rjmp MAIN_LOOP
+    ldi r17, ST_ABIERTA
+    rcall ACTUALIZAR_SALIDAS
     rjmp MAIN_LOOP
 
-COMANDO_CERRAR:
-    cbi PORTD, 4
-    sbi PORTD, 5
+CHECK_SENSOR_CERRADA:
+    ; --- CERRANDO + sensor puerta cerrada -> CERRADA ---
+    cpi r17, ST_CERRANDO
+    brne MAIN_LOOP
+    sbic PINC, 1
     rjmp MAIN_LOOP
+    ldi r17, ST_CERRADA
+    rcall ACTUALIZAR_SALIDAS
+    rjmp MAIN_LOOP
+
+;================================================================
+; ACTUALIZAR_SALIDAS: pone los LEDs segun el estado en r17
+;================================================================
+ACTUALIZAR_SALIDAS:
+    ldi ZL, low(LUT_SALIDAS*2)
+    ldi ZH, high(LUT_SALIDAS*2)
+    add ZL, r17
+    adc ZH, r1
+    lpm r16, Z
+    out PORTD, r16
+    ret
 
 ;================================================================
 ; USART_INIT: 9600 baudios, 8 bits, sin paridad, 1 stop (F_CPU=16MHz)
@@ -64,3 +116,10 @@ USART_INIT:
     ldi r16, (1<<UCSZ01)|(1<<UCSZ00)
     sts UCSR0C, r16
     ret
+
+;================================================================
+; LUT: patron de PD4:PD5 (LEDs) para cada estado
+;================================================================
+LUT_SALIDAS:
+    .db 0b00000000, 0b00010000, 0b00000000, 0b00100000
+    ; CERRADA, ABRIENDO, ABIERTA, CERRANDO
