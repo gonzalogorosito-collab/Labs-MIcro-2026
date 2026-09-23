@@ -24,5 +24,25 @@ reset:
     ldi r16, (1<<PC0) | (1<<PC1)
     out PORTC, r16      
 
+    ; 4. Configuración del Timer0 para Control de Frecuencia (Modo CTC)
+    ldi r16, (1 << WGM01)              
+    out TCCR0A, r16
+
+    ldi r22, 100                       
+    out OCR0A, r22
+
+    ldi r16, (1 << CS01) | (1 << CS00)  
+    out TCCR0B, r16
+
 bucle_principal:
+    ; --- Sincronización por Temporizador (Timer0) ---
+    in r16, TIFR0
+    sbrs r16, OCF0A                    
+    rjmp saltar_a_controles
+
+    ; Limpiar bandera OCF0A
+    ldi r16, (1 << OCF0A)
+    out TIFR0, r16
+
+saltar_a_controles:
     rjmp bucle_principal
