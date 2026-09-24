@@ -1,11 +1,11 @@
 ;================================================================
-; Mapeo de pines (Problema E, paso 2 - maquina de estados + sensores):
+; Mapeo de pines (Problema E, paso 3 - alarma):
 ;   PD0 - RXD (USART, manejado por hardware) - comandos del control remoto
 ;   PD4 - LED motor abriendo
 ;   PD5 - LED motor cerrando
+;   PD6 - Alarma
 ;   PC1 - Sensor puerta cerrada (pulsador, pull-up)
 ;   PC2 - Sensor puerta abierta (pulsador, pull-up)
-;   (El sensor de obstaculo en PC0 se agrega en un paso posterior)
 ;================================================================
 .equ ST_CERRADA  = 0
 .equ ST_ABRIENDO = 1
@@ -26,8 +26,8 @@ RESET:
     out SPH, r16
     clr r1                          ; registro cero para direccionar la LUT
 
-    ; --- PD4:PD5 como salida ---
-    ldi r16, 0b00110000
+    ; --- PD4:PD6 como salida ---
+    ldi r16, 0b01110000
     out DDRD, r16
     clr r16
     out PORTD, r16
@@ -92,7 +92,7 @@ CHECK_SENSOR_CERRADA:
     rjmp MAIN_LOOP
 
 ;================================================================
-; ACTUALIZAR_SALIDAS: pone los LEDs segun el estado en r17
+; ACTUALIZAR_SALIDAS: pone LEDs/alarma segun el estado en r17
 ;================================================================
 ACTUALIZAR_SALIDAS:
     ldi ZL, low(LUT_SALIDAS*2)
@@ -118,8 +118,8 @@ USART_INIT:
     ret
 
 ;================================================================
-; LUT: patron de PD4:PD5 (LEDs) para cada estado
+; LUT: patron de PD4:PD6 (LEDs + alarma) para cada estado
 ;================================================================
 LUT_SALIDAS:
-    .db 0b00000000, 0b00010000, 0b00000000, 0b00100000
-    ; CERRADA, ABRIENDO, ABIERTA, CERRANDO
+    .db 0b00000000, 0b01010000, 0b00000000, 0b01100000
+    ; CERRADA,     ABRIENDO,    ABIERTA,    CERRANDO
