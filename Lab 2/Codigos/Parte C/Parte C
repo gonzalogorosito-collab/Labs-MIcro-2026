@@ -569,3 +569,42 @@ Penta:
 	LDI R17, 0X08
 	OUT PORTD, R17
     RET
+
+; --- (10) Traslados con lápiz arriba ---
+ABAS:
+	LDI R17, 0X18      ; abajo   + subir
+	OUT PORTD, R17
+	RET
+ARRS:
+	LDI R17, 0X28      ; arriba  + subir
+	OUT PORTD, R17
+	RET
+DERS:
+	LDI R17, 0X48      ; derecha + subir
+	OUT PORTD, R17
+	RET
+IZQS:
+	LDI R17, 0X88      ; izquierda + subir
+	OUT PORTD, R17
+	RET
+
+; --- (11) Pasos de dibujo (P1 = 2 x M1) ---
+P1:
+	RCALL M1
+	RCALL M1
+	RET
+P2:
+	RCALL P1
+	RCALL P1
+	RET
+P3: 
+	RCALL P1
+	RCALL P1
+	RCALL P1
+	RET
+P4:
+	RCALL P1
+	RCALL P1
+	RCALL P1
+	RCALL P1
+	RET
