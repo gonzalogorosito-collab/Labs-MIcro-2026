@@ -80,7 +80,42 @@ enviar_dac:
     out PORTB, r18
 
 saltar_a_controles:
+    rcall chequear_botones
     rjmp bucle_principal
+
+
+; ==============================================================================
+; RUTINA DE CONTROL DE BOTONES
+; ==============================================================================
+chequear_botones:
+    sbic PINC, 0            ; Si PC0 es 1 (no presionado), salta
+    rjmp check_btn2         
+    rjmp inc_frec_btn       
+
+check_btn2:
+    sbic PINC, 1            ; Si PC1 es 1 (no presionado), salta
+    ret                     ; Retorna si no hay botones presionados
+    rjmp dec_frec_btn       
+
+inc_frec_btn:
+    cpi r22, 10
+    breq esperar_soltar_inc
+    subi r22, 10
+    out OCR0A, r22
+esperar_soltar_inc:
+    sbis PINC, 0            
+    rjmp esperar_soltar_inc
+    ret
+
+dec_frec_btn:
+    cpi r22, 240
+    breq esperar_soltar_dec
+    subi r22, -10
+    out OCR0A, r22
+esperar_soltar_dec:
+    sbis PINC, 1            
+    rjmp esperar_soltar_dec
+    ret
 
 
 ; --- Carga la dirección base de la tabla activa en Z ---
