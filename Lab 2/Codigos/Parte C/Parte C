@@ -16,8 +16,7 @@ Seteo:
 	OUT DDRD, R17
 
 MainLoop:
-	RCALL Pos
-	RCALL Poliwag
+	RCALL Tod
 Main2:
     RJMP Main2
 
@@ -180,6 +179,9 @@ tri:
 	LDI R17, 0X00
 	OUT PORTD, R17
 	LDI R17, 0XA4
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X08
 	OUT PORTD, R17
 	RCALL Mseg
 	LDI R17, 0X00
@@ -1187,4 +1189,92 @@ Poliwag:
 	LDI R17, 0X08
 	OUT PORTD, R17
 	RCALL Mseg
+	RET
+
+; --- (13) Posición inicial para dibujar todas las figuras ---
+Post:
+	LDI R17, 0X00
+	LDI R17, 0X80
+	OUT PORTD, R17
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	LDI R17, 0X10
+	OUT PORTD, R17
+	RCALL Mseg
+	LDI R17, 0X00
+	OUT PORTD, R17
+	RET
+
+; --- (14) Traslado genérico: R17 = dirección, R18 = cantidad de M1 ---
+Mover:
+	OUT PORTD, R17
+Mover_L:
+	RCALL M1
+	DEC R18
+	BRNE Mover_L
+	RET
+
+; --- (15) Dibujo de todas las figuras en la hoja ---
+Tod:
+	RCALL Post              
+
+	; ---- Triángulo (10, 20)
+	LDI R17, 0X48           ; derecha, lápiz arriba
+	LDI R18, 10
+	RCALL Mover
+	LDI R17, 0X18           ; abajo, lápiz arriba
+	LDI R18, 20
+	RCALL Mover
+	RCALL tri
+
+	; ---- Casa: desde (10,20) hasta (142,36)
+	LDI R17, 0X48
+	LDI R18, 132
+	RCALL Mover
+	LDI R17, 0X18
+	LDI R18, 16
+	RCALL Mover
+	RCALL Casa
+
+	; ---- Círculo: desde (110,36) hasta (247,20)
+	LDI R17, 0X48
+	LDI R18, 137
+	RCALL Mover
+	LDI R17, 0X28           ; arriba, lápiz arriba
+	LDI R18, 16
+	RCALL Mover
+	RCALL Cir
+
+	; ---- Penta: vuelve al tope izquierdo y baja a la fila 2
+	LDI R17, 0X88           ; izquierda hasta el tope (300 M1)
+	LDI R18, 255
+	RCALL Mover
+	LDI R17, 0X88
+	LDI R18, 45
+	RCALL Mover
+	LDI R17, 0X48
+	LDI R18, 10
+	RCALL Mover
+	LDI R17, 0X18
+	LDI R18, 132
+	RCALL Mover
+	RCALL Penta
+
+	; ---- Poliwag: desde (10,136) hasta (128,122)
+	LDI R17, 0X48
+	LDI R18, 118
+	RCALL Mover
+	LDI R17, 0X28
+	LDI R18, 14
+	RCALL Mover
+	RCALL Poliwag
+
+	LDI R17, 0X00
+	OUT PORTD, R17
 	RET
