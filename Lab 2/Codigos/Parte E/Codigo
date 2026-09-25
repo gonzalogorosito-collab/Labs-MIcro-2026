@@ -1,6 +1,7 @@
 ;================================================================
-; Mapeo de pines (Problema E - version completa):
+; Mapeo de pines (Problema E - version completa con mensajes USART):
 ;   PD0 - RXD (USART, manejado por hardware) - comandos del control remoto
+;   PD1 - TXD (USART, manejado por hardware) - mensajes de estado
 ;   PD4 - LED motor abriendo
 ;   PD5 - LED motor cerrando
 ;   PD6 - Alarma
@@ -31,7 +32,7 @@ RESET:
     out SPL, r16
     ldi r16, high(RAMEND)
     out SPH, r16
-    clr r1                          ; registro cero para direccionar la LUT
+    clr r1                          ; registro cero para direccionar las LUT
 
     ; --- PD4:PD6 como salida ---
     ldi r16, 0b01110000
@@ -45,7 +46,7 @@ RESET:
     ldi r16, 0b00000111
     out PORTC, r16
 
-    ; --- Configurar USART: 9600 baudios, 8N1, solo recepcion ---
+    ; --- Configurar USART: 9600 baudios, 8N1, TX y RX ---
     rcall USART_INIT
 
     ; --- Habilitar interrupcion por cambio de pin en PC0 (PCINT8) ---
@@ -116,29 +117,60 @@ CHECK_SENSOR_CERRADA:
     rjmp MAIN_LOOP
 
 ;================================================================
-; ACTUALIZAR_SALIDAS: pone LEDs/alarma segun el estado en r17
+; ACTUALIZAR_SALIDAS: pone LEDs/alarma y transmite el mensaje
+; correspondiente al estado en r17
 ;================================================================
 ACTUALIZAR_SALIDAS:
+    ; --- LEDs/alarma ---
     ldi ZL, low(LUT_SALIDAS*2)
     ldi ZH, high(LUT_SALIDAS*2)
     add ZL, r17
     adc ZH, r1
     lpm r16, Z
     out PORTD, r16
+
+    ; --- Buscar el puntero al mensaje de este estado ---
+    ldi ZL, low(MSG_TABLE*2)
+    ldi ZH, high(MSG_TABLE*2)
+    mov r19, r17
+    lsl r19                          ; cada entrada de la tabla ocupa 2 bytes
+    add ZL, r19
+    adc ZH, r1
+    lpm r20, Z+
+    lpm r21, Z
+    mov ZL, r20
+    mov ZH, r21
+    rcall TX_STRING
     ret
 
 ;================================================================
-; USART_INIT: 9600 baudios, 8 bits, sin paridad, 1 stop (F_CPU=16MHz)
+; USART_INIT: 9600 baudios, 8 bits, sin paridad, 1 stop, TX+RX
 ;================================================================
 USART_INIT:
     ldi r16, high(103)
     sts UBRR0H, r16
     ldi r16, low(103)
     sts UBRR0L, r16
-    ldi r16, (1<<RXEN0)
+    ldi r16, (1<<RXEN0)|(1<<TXEN0)
     sts UCSR0B, r16
     ldi r16, (1<<UCSZ01)|(1<<UCSZ00)
     sts UCSR0C, r16
+    ret
+
+;================================================================
+; TX_STRING: transmite la cadena apuntada por Z, terminada en 0
+;================================================================
+TX_STRING:
+    lpm r16, Z+
+    cpi r16, 0
+    breq TX_STRING_FIN
+TX_STRING_WAIT:
+    lds r18, UCSR0A
+    sbrs r18, UDRE0
+    rjmp TX_STRING_WAIT
+    sts UDR0, r16
+    rjmp TX_STRING
+TX_STRING_FIN:
     ret
 
 ;================================================================
@@ -149,6 +181,9 @@ OBSTACULO_ISR:
     in r16, SREG
     push r16
     push r18
+    push r19
+    push r20
+    push r21
     push ZL
     push ZH
 
@@ -168,6 +203,9 @@ OBSTACULO_DETENER:
 OBSTACULO_FIN:
     pop ZH
     pop ZL
+    pop r21
+    pop r20
+    pop r19
     pop r18
     pop r16
     out SREG, r16
@@ -179,4 +217,21 @@ OBSTACULO_FIN:
 ;================================================================
 LUT_SALIDAS:
     .db 0b00000000, 0b01010000, 0b00000000, 0b01100000, 0b00000000, 0b00000000
-    ; CERRADA,     ABRIENDO,    ABIERTA,    CERRANDO,    DETENIDA,    (relleno)
+    ; CERRADA,     ABRIENDO,    ABIERTA,    CERRANDO,    DETENIDA,   (relleno)
+
+;================================================================
+; Tabla de punteros a los mensajes de cada estado
+;================================================================
+MSG_TABLE:
+    .dw MSG_CERRADA*2, MSG_ABRIENDO*2, MSG_ABIERTA*2, MSG_CERRANDO*2, MSG_DETENIDA*2
+
+MSG_CERRADA:
+    .db "Puerta cerrada.", 13, 10, 0
+MSG_ABRIENDO:
+    .db "Puerta abriendo.", 13, 10, 0, 0
+MSG_ABIERTA:
+    .db "Puerta abierta.", 13, 10, 0
+MSG_CERRANDO:
+    .db "Puerta cerrando.", 13, 10, 0, 0
+MSG_DETENIDA:
+    .db "Obstaculo detectado.", 13, 10, "Movimiento detenido por seguridad.", 13, 10, 0, 0
