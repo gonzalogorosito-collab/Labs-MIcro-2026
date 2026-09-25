@@ -1,9 +1,10 @@
 ;================================================================
-; Mapeo de pines (Problema E, paso 3 - alarma):
+; Mapeo de pines (Problema E - version completa):
 ;   PD0 - RXD (USART, manejado por hardware) - comandos del control remoto
 ;   PD4 - LED motor abriendo
 ;   PD5 - LED motor cerrando
 ;   PD6 - Alarma
+;   PC0 - Sensor de obstaculo (pulsador, pull-up) - PCINT8
 ;   PC1 - Sensor puerta cerrada (pulsador, pull-up)
 ;   PC2 - Sensor puerta abierta (pulsador, pull-up)
 ;================================================================
@@ -11,10 +12,16 @@
 .equ ST_ABRIENDO = 1
 .equ ST_ABIERTA  = 2
 .equ ST_CERRANDO = 3
+.equ ST_DETENIDA = 4
 
 .include "m328Pdef.inc"
+
 .org 0x0000
     rjmp RESET
+.org 0x0008
+    rjmp OBSTACULO_ISR              ; vector PCINT1 (cubre PC0:PC6)
+
+.org 0x001A
 ;================================================================
 ; Programa principal
 ;================================================================
@@ -32,14 +39,23 @@ RESET:
     clr r16
     out PORTD, r16
 
-    ; --- PC1:PC2 como entrada con pull-up ---
+    ; --- PC0:PC2 como entrada con pull-up ---
     ldi r16, 0b00000000
     out DDRC, r16
-    ldi r16, 0b00000110
+    ldi r16, 0b00000111
     out PORTC, r16
 
     ; --- Configurar USART: 9600 baudios, 8N1, solo recepcion ---
     rcall USART_INIT
+
+    ; --- Habilitar interrupcion por cambio de pin en PC0 (PCINT8) ---
+    ldi r16, (1<<PCIF1)
+    out PCIFR, r16                  ; limpiar flag pendiente antes de habilitar
+    ldi r16, (1<<PCIE1)
+    sts PCICR, r16
+    ldi r16, (1<<PCINT8)
+    sts PCMSK1, r16
+    sei                              ; habilitar interrupciones globales
 
     ; --- Estado inicial: puerta cerrada ---
     ldi r17, ST_CERRADA
@@ -52,21 +68,29 @@ MAIN_LOOP:
     rjmp CHECK_SENSORES
     lds r18, UDR0
 
-    ; --- CERRADA + comando 'A' -> ABRIENDO ---
-    cpi r17, ST_CERRADA
-    brne CHECK_C_ABIERTA
+    ; --- Comando 'A': CERRADA o DETENIDA -> ABRIENDO ---
     cpi r18, 'A'
-    brne CHECK_SENSORES
+    brne CHECK_C
+    cpi r17, ST_CERRADA
+    breq DO_ABRIR
+    cpi r17, ST_DETENIDA
+    breq DO_ABRIR
+    rjmp MAIN_LOOP
+DO_ABRIR:
     ldi r17, ST_ABRIENDO
     rcall ACTUALIZAR_SALIDAS
     rjmp MAIN_LOOP
 
-CHECK_C_ABIERTA:
-    ; --- ABIERTA + comando 'C' -> CERRANDO ---
-    cpi r17, ST_ABIERTA
-    brne CHECK_SENSORES
+CHECK_C:
+    ; --- Comando 'C': ABIERTA o DETENIDA -> CERRANDO ---
     cpi r18, 'C'
-    brne CHECK_SENSORES
+    brne MAIN_LOOP
+    cpi r17, ST_ABIERTA
+    breq DO_CERRAR
+    cpi r17, ST_DETENIDA
+    breq DO_CERRAR
+    rjmp MAIN_LOOP
+DO_CERRAR:
     ldi r17, ST_CERRANDO
     rcall ACTUALIZAR_SALIDAS
     rjmp MAIN_LOOP
@@ -118,8 +142,41 @@ USART_INIT:
     ret
 
 ;================================================================
+; OBSTACULO_ISR: si esta ABRIENDO/CERRANDO, pasa a DETENIDA
+;================================================================
+OBSTACULO_ISR:
+    push r16
+    in r16, SREG
+    push r16
+    push r18
+    push ZL
+    push ZH
+
+    sbic PINC, 0                    ; si esta en alto (no presionado), salir
+    rjmp OBSTACULO_FIN
+
+    cpi r17, ST_ABRIENDO
+    breq OBSTACULO_DETENER
+    cpi r17, ST_CERRANDO
+    breq OBSTACULO_DETENER
+    rjmp OBSTACULO_FIN
+
+OBSTACULO_DETENER:
+    ldi r17, ST_DETENIDA
+    rcall ACTUALIZAR_SALIDAS
+
+OBSTACULO_FIN:
+    pop ZH
+    pop ZL
+    pop r18
+    pop r16
+    out SREG, r16
+    pop r16
+    reti
+
+;================================================================
 ; LUT: patron de PD4:PD6 (LEDs + alarma) para cada estado
 ;================================================================
 LUT_SALIDAS:
-    .db 0b00000000, 0b01010000, 0b00000000, 0b01100000
-    ; CERRADA,     ABRIENDO,    ABIERTA,    CERRANDO
+    .db 0b00000000, 0b01010000, 0b00000000, 0b01100000, 0b00000000, 0b00000000
+    ; CERRADA,     ABRIENDO,    ABIERTA,    CERRANDO,    DETENIDA,    (relleno)
