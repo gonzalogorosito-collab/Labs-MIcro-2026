@@ -1,0 +1,123 @@
+#define F_CPU    16000000UL
+#define PCF8574  0x20           // Proteus: 0x20 | Módulo físico: 0x27 o 0x3F
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <stdio.h>
+#include <stdint.h>
+#include "twi_lcd.h"
+
+//===================== MAPEO DE PINES =====================
+// Pin 2 (PD2)  -> DATA del DHT11
+// A4 (PC4)     -> SDA del módulo LCD I2C
+// A5 (PC5)     -> SCL del módulo LCD I2C
+//==========================================================
+
+#define DHT_PIN    PD2
+#define DHT_LEER   ((PIND >> DHT_PIN) & 1)
+
+#define DHT_OK         0
+#define DHT_ERR_RESP   1
+#define DHT_ERR_CHECK  2
+
+//======================== DHT11 ===========================
+// --- Espera a que la línea tome el nivel indicado, con timeout en us ---
+static uint8_t dht_esperar(uint8_t nivel, uint8_t timeout_us)
+{
+	while (DHT_LEER != nivel)
+	{
+		if (timeout_us-- == 0) return 0;
+		_delay_us(1);
+	}
+	return 1;
+}
+
+uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
+{
+	uint8_t datos[5] = {0, 0, 0, 0, 0};
+	uint8_t i, j;
+	uint8_t sreg;
+
+	// --- Pulso de inicio: línea en bajo 20 ms ---
+	DDRD  |=  (1 << DHT_PIN);
+	PORTD &= ~(1 << DHT_PIN);
+	_delay_ms(20);
+
+	// --- Liberar la línea y pasar a entrada (pull-up interno activo) ---
+	sreg = SREG;
+	cli();
+	PORTD |=  (1 << DHT_PIN);
+	_delay_us(30);
+	DDRD  &= ~(1 << DHT_PIN);
+
+	// --- Respuesta del sensor: 80 us bajo, 80 us alto, inicio del primer bit ---
+	if (!dht_esperar(0, 100) || !dht_esperar(1, 100) || !dht_esperar(0, 100))
+	{
+		SREG = sreg;
+		return DHT_ERR_RESP;
+	}
+
+	// --- Lectura de 40 bits: alto ~27 us = 0, alto ~70 us = 1 ---
+	for (i = 0; i < 5; i++)
+	{
+		for (j = 0; j < 8; j++)
+		{
+			if (!dht_esperar(1, 80)) { SREG = sreg; return DHT_ERR_RESP; }
+			_delay_us(40);
+			datos[i] <<= 1;
+			if (DHT_LEER)
+			{
+				datos[i] |= 1;
+				if (!dht_esperar(0, 80)) { SREG = sreg; return DHT_ERR_RESP; }
+			}
+		}
+	}
+	SREG = sreg;
+
+	// --- Verificación del checksum ---
+	if ((uint8_t)(datos[0] + datos[1] + datos[2] + datos[3]) != datos[4])
+		return DHT_ERR_CHECK;
+
+	*hum  = datos[0];
+	*temp = datos[2];
+	return DHT_OK;
+}
+
+//======================== MAIN ============================
+int main(void)
+{
+	uint8_t temp, hum, estado;
+	char linea[17];
+
+	DDRD  &= ~(1 << DHT_PIN);
+	PORTD |=  (1 << DHT_PIN);
+
+	twi_init();
+	_delay_ms(50);
+	twi_lcd_init();
+	twi_lcd_cmd(0x0C);          // Apaga el cursor parpadeante de la librería
+
+	while (1)
+	{
+		estado = dht11_leer(&temp, &hum);
+
+		if (estado == DHT_OK)
+		{
+			sprintf(linea, "Temp: %2u C      ", temp);
+			twi_lcd_cmd(0x80);
+			twi_lcd_msg(linea);
+			sprintf(linea, "Hum:  %2u %%      ", hum);
+			twi_lcd_cmd(0xC0);
+			twi_lcd_msg(linea);
+		}
+		else
+		{
+			sprintf(linea, "Error DHT: %u    ", estado);
+			twi_lcd_cmd(0x80);
+			twi_lcd_msg(linea);
+		}
+
+		_delay_ms(2000);
+	}
+}
