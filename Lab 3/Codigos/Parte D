@@ -1,1 +1,158 @@
+#define F_CPU 16000000UL
 
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <util/delay.h>
+#include <stdint.h>
+
+static uint8_t lcd_addr = 0x27;
+#define PCF8574 lcd_addr
+
+#include "twi_lcd.h"                 // libreria del LCD (incluye twi.h y twi.c)
+
+#define UBRRVAL  103     
+#define GAP_MS   60     
+
+#define DEBUG_NOTAS 0     // 1: imprime por UART cada nota que suena
+
+/* duracion de 1 tiempo por cancion (ms): mas grande = mas lento */
+#define T1  150UL           // The Sims
+#define T2  250UL           // FNAF
+#define T3  300UL           // He's a Pirate
+
+static uint8_t lcd_ok = 0;              // 1 si algun modulo I2C respondio al arrancar
+
+/*Frecuencias (Hz)*/
+#define DO    262
+#define RE    294
+#define MI    330
+#define FA    349
+#define SOL   392
+#define LA    440
+#define SI    494
+#define DO2   523
+#define SI3   247
+#define DOs4  277
+#define REs4  311
+#define FAs4  370
+#define SOLs4 415
+#define DOs5  554
+#define MI5   659
+#define FAs5  740
+#define LA5   880
+/* Para la cancion 3 */
+#define LA3   220
+#define LAs3  233
+#define DO5   523
+#define RE5   587
+#define FA5   698
+#define SOL5  784
+#define LAs5  932
+/* Para la cancion 1 */
+#define SOLs5 831
+#define SI5   988
+
+typedef struct { uint16_t freq; uint16_t dur; } nota_t;   // freq 0 = silencio
+
+/* Canciones*/
+/* Cancion 1: The Sims - melodia */
+static const nota_t MEL1[] PROGMEM = {
+    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,12*T1},                            // 0-16
+    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,8*T1},  {SOLs5,4*T1},  {FAs5,4*T1},   // 16-36
+    {LA5,2*T1},   {LA5,6*T1},   {LA5,4*T1},   {LA5,2*T1},    {SOLs5,12*T1}, // 36-62
+    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,2*T1}, {SOLs5,6*T1},                 // 62-74
+    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,6*T1},  {SOLs5,2*T1},  {FAs5,2*T1},   // 74-88
+    {LA5,1*T1},   {LA5,4*T1},   {SI5,2*T1},   {LA5,1*T1}                  // 88-96
+};
+
+/* Cancion 1: The Sims - bajo */
+static const nota_t BAJO1[] PROGMEM = {
+    {0,4*T1},                                                               // 0-4
+    {MI,6*T1},    {MI,6*T1},    {MI,4*T1},                                  // 4-20
+    {FAs4,6*T1},  {FAs4,6*T1},  {FAs4,4*T1},                                // 20-36
+    {LA,6*T1},    {LA,6*T1},    {LA,4*T1},                                  // 36-52
+    {MI,4*T1},    {MI,6*T1},    {MI,2*T1},    {0,2*T1},                     // 52-64, silencio 64-66
+    {MI,4*T1},    {MI,4*T1},    {MI,2*T1},    {0,2*T1},                     // 66-76, silencio 76-78
+    {FAs4,4*T1},  {FAs4,4*T1},  {FAs4,2*T1},                                // 78-88
+    {LA,4*T1},    {LA,4*T1},    {LA,2*T1}                                   // 88-98
+};
+
+/* Cancion 2: FNAF - melodia*/
+static const nota_t MEL2[] PROGMEM = {
+    {SI,2*T2},    {DOs5,2*T2},  {SI,1*T2},    {SOLs4,2*T2},
+    {SOLs4,2*T2}, {SOLs4,2*T2}, {FAs4,1*T2},  {SOLs4,2*T2},
+    {LA,1*T2},    {SOLs4,4*T2},                                 // 0-19
+    {LA,2*T2},    {FAs4,2*T2},  {SI,1*T2},    {SOLs4,4*T2},   // 19-28
+    {MI,2*T2},    {DOs4,2*T2},  {FAs4,1*T2},  {DO,4*T2},      // 28-37  ("Do 4" = Do natural)
+    {MI,2*T2},    {REs4,1*T2},  {DOs4,1*T2},  {SI3,2*T2},     // 37-43
+    {MI,2*T2},    {SOLs4,1*T2}, {SI,1*T2},    {DO2,1*T2},     // 43-48  ("Do 1" = Do natural, una octava arriba)
+    {SI,2*T2},    {LA,2*T2}                                     // 48-52
+};
+
+/* Cancion 2: FNAF - bajo */
+static const nota_t BAJO2[] PROGMEM = {
+    {0,19*T2},                                                  // entra en el La 2 (tiempo 19)
+    {DOs4,2*T2}, {MI,2*T2},  {0,1*T2},                          // 19-23, silencio 23-24
+    {REs4,2*T2}, {FAs4,2*T2},{DOs4,2*T2},{MI,2*T2}, {0,1*T2}, // 24-32, silencio 32-33
+    {REs4,2*T2},{SOLs4,2*T2},{DOs4,2*T2},{DOs4,2*T2},{MI,2*T2},{0,2*T2},  // 33-43, silencio 43-45
+    {SOLs4,2*T2},{0,1*T2},                                      // 45-47, silencio 47-48
+    {FAs4,2*T2}                                                 // 48-50
+};
+
+/* Cancion 3: He's a Pirate - melodia*/
+static const nota_t MEL3[] PROGMEM = {
+    {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},
+    {FA5,2*T3},  {FA5,2*T3},  {FA5,1*T3},  {SOL5,1*T3}, {MI5,2*T3},  {MI5,2*T3},  {RE5,1*T3},  {DO5,1*T3},
+    {DO5,1*T3},  {RE5,2*T3},  {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},
+    {FA5,2*T3},  {FA5,2*T3},  {FA5,1*T3},  {SOL5,1*T3}, {MI5,2*T3},  {MI5,2*T3},  {RE5,1*T3},  {DO5,1*T3},
+
+    {RE5,2*T3},  {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {FA5,1*T3},
+    {SOL5,2*T3}, {SOL5,2*T3}, {SOL5,1*T3},
+    {LA5,1*T3},  {LAs5,1*T3}, {LAs5,1*T3}, {LA5,1*T3},  {LA5,1*T3},  {LA5,1*T3},
+    {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},  {FA5,2*T3},  {FA5,2*T3}
+};
+
+/* Cancion 3: He's a Pirate - bajo */
+static const nota_t BAJO3[] PROGMEM = {
+    {0,2*T3},                                                   // 0-2
+    {RE,4*T3},   {0,2*T3},                                      // 2-6, silencio 6-8
+    {LAs3,4*T3}, {0,2*T3},                                      // 8-12, silencio 12-14
+    {LA3,4*T3},  {0,2*T3},                                      // 14-18, silencio 18-20
+    {RE,4*T3},   {0,1*T3},                                      // 20-24, silencio 24-25
+    {LAs3,4*T3}, {0,2*T3},                                      // 25-29, silencio 29-31
+    {FA,4*T3},   {0,2*T3},                                      // 31-35, silencio 35-37
+    {DO,4*T3},   {0,2*T3},                                      // 37-41, silencio 41-43
+    {RE,4*T3},                                                  // 43-47  (hoja 2)
+    {RE,4*T3},   {0,2*T3},                                      // 47-51, silencio 51-53
+    {LAs3,4*T3}, {0,2*T3},                                      // 53-57, silencio 57-59
+    {SOL,4*T3},                                                 // 59-63
+    {RE,4*T3},   {0,1*T3},                                      // 63-67, silencio 67-68
+    {LAs3,4*T3}                                                 // 68-72
+};
+
+static const char NOM1[] PROGMEM = "The Sims";
+static const char NOM2[] PROGMEM = "FNAF";
+static const char NOM3[] PROGMEM = "He's a Pirate";
+
+typedef struct {
+    const nota_t *mel;   uint8_t len_mel;
+    const nota_t *bajo;  uint8_t len_bajo;
+    const char   *nombre;
+} cancion_t;
+
+#define N(a) ((uint8_t)(sizeof(a)/sizeof(nota_t)))
+static const cancion_t CANCIONES[3] = {
+    { MEL1, N(MEL1), BAJO1, N(BAJO1), NOM1 },
+    { MEL2, N(MEL2), BAJO2, N(BAJO2), NOM2 },
+    { MEL3, N(MEL3), BAJO3, N(BAJO3), NOM3 }
+};
+
+static const uint16_t NOTAS_PIANO[8] = { DO, RE, MI, FA, SOL, LA, SI, DO2 };
+static const char NOMBRES[8][9] PROGMEM = {
+    "Do", "Re", "Mi", "Fa", "Sol", "La", "Si", "Do agudo"
+};
+
+/*Maquina de estados*/
+typedef enum { ST_INICIO, ST_PIANO, ST_CANCION } estado_t;
+static estado_t estado = ST_INICIO;
