@@ -31,6 +31,9 @@ volatile char    rx_buffer[RX_LEN];
 volatile uint8_t rx_idx = 0;
 volatile uint8_t rx_linea_lista = 0;
 
+volatile uint8_t t1_segundos = 0;
+volatile uint8_t medir = 1;                 // En 1 para medir apenas arranca
+
 //======================== USART ===========================
 void uart_init(void)
 {
@@ -70,6 +73,25 @@ ISR(USART_RX_vect)
 	else if (rx_idx < RX_LEN - 1)
 	{
 		rx_buffer[rx_idx++] = c;
+	}
+}
+
+//======================== TIMER1 ==========================
+void timer1_init(void)
+{
+	TCCR1A = 0x00;
+	TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);     // CTC, prescaler 1024
+	OCR1A  = 15624;                                         // 16 MHz / 1024 / 15625 = 1 Hz
+	TIMSK1 = (1 << OCIE1A);                                 // Interrupción por comparación A
+}
+
+// --- Tick de 1 s: cada 5 s habilita una medición ---
+ISR(TIMER1_COMPA_vect)
+{
+	if (++t1_segundos >= 5)
+	{
+		t1_segundos = 0;
+		medir = 1;
 	}
 }
 
@@ -140,7 +162,6 @@ uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
 int main(void)
 {
 	uint8_t temp, hum, estado;
-	uint8_t k;
 	char linea[17];
 	char msg[40];
 
@@ -148,6 +169,7 @@ int main(void)
 	PORTD |=  (1 << DHT_PIN);
 
 	uart_init();
+	timer1_init();
 	twi_init();
 	_delay_ms(50);
 	twi_lcd_init();
@@ -158,42 +180,42 @@ int main(void)
 
 	while (1)
 	{
-		// --- Lectura del sensor, LCD y envío por UART ---
-		estado = dht11_leer(&temp, &hum);
-
-		if (estado == DHT_OK)
+		// --- Medición cada 5 s ---
+		if (medir)
 		{
-			sprintf(linea, "Temp: %2u C      ", temp);
-			twi_lcd_cmd(0x80);
-			twi_lcd_msg(linea);
-			sprintf(linea, "Hum:  %2u %%      ", hum);
-			twi_lcd_cmd(0xC0);
-			twi_lcd_msg(linea);
+			medir = 0;
+			estado = dht11_leer(&temp, &hum);
 
-			sprintf(msg, "Temp: %u C | Hum: %u %%\r\n", temp, hum);
-			uart_print(msg);
-		}
-		else
-		{
-			sprintf(linea, "Error DHT: %u    ", estado);
-			twi_lcd_cmd(0x80);
-			twi_lcd_msg(linea);
-
-			sprintf(msg, "Error DHT: %u\r\n", estado);
-			uart_print(msg);
-		}
-
-		// --- Espera de 2 s revisando comandos cada 10 ms ---
-		for (k = 0; k < 200; k++)
-		{
-			if (rx_linea_lista)
+			if (estado == DHT_OK)
 			{
-				uart_print("Recibido: ");
-				uart_print((const char *)rx_buffer);
-				uart_print("\r\n");
-				rx_linea_lista = 0;
+				sprintf(linea, "Temp: %2u C      ", temp);
+				twi_lcd_cmd(0x80);
+				twi_lcd_msg(linea);
+				sprintf(linea, "Hum:  %2u %%      ", hum);
+				twi_lcd_cmd(0xC0);
+				twi_lcd_msg(linea);
+
+				sprintf(msg, "Temp: %u C | Hum: %u %%\r\n", temp, hum);
+				uart_print(msg);
 			}
-			_delay_ms(10);
+			else
+			{
+				sprintf(linea, "Error DHT: %u    ", estado);
+				twi_lcd_cmd(0x80);
+				twi_lcd_msg(linea);
+
+				sprintf(msg, "Error DHT: %u\r\n", estado);
+				uart_print(msg);
+			}
+		}
+
+		// --- Atención de comandos recibidos por UART ---
+		if (rx_linea_lista)
+		{
+			uart_print("Recibido: ");
+			uart_print((const char *)rx_buffer);
+			uart_print("\r\n");
+			rx_linea_lista = 0;
 		}
 	}
 }
