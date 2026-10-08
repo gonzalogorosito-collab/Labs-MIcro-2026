@@ -56,79 +56,72 @@ static uint8_t lcd_ok = 0;              // 1 si algun modulo I2C respondio al ar
 typedef struct { uint16_t freq; uint16_t dur; } nota_t;   // freq 0 = silencio
 
 /* Canciones*/
-/* Cancion 1: The Sims - melodia */
 static const nota_t MEL1[] PROGMEM = {
-    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,12*T1},                            // 0-16
-    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,8*T1},  {SOLs5,4*T1},  {FAs5,4*T1},   // 16-36
-    {LA5,2*T1},   {LA5,6*T1},   {LA5,4*T1},   {LA5,2*T1},    {SOLs5,12*T1}, // 36-62
-    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,2*T1}, {SOLs5,6*T1},                 // 62-74
-    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,6*T1},  {SOLs5,2*T1},  {FAs5,2*T1},   // 74-88
-    {LA5,1*T1},   {LA5,4*T1},   {SI5,2*T1},   {LA5,1*T1}                  // 88-96
+    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,12*T1},                            
+    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,8*T1},  {SOLs5,4*T1},  {FAs5,4*T1},   
+    {LA5,2*T1},   {LA5,6*T1},   {LA5,4*T1},   {LA5,2*T1},    {SOLs5,12*T1}, 
+    {MI5,2*T1},   {FAs5,2*T1},  {SOLs5,2*T1}, {SOLs5,6*T1},                 
+    {FAs5,2*T1},  {SOLs5,2*T1}, {LAs5,6*T1},  {SOLs5,2*T1},  {FAs5,2*T1},   
+    {LA5,1*T1},   {LA5,4*T1},   {SI5,2*T1},   {LA5,1*T1}                  
 };
 
-/* Cancion 1: The Sims - bajo */
 static const nota_t BAJO1[] PROGMEM = {
-    {0,4*T1},                                                               // 0-4
-    {MI,6*T1},    {MI,6*T1},    {MI,4*T1},                                  // 4-20
-    {FAs4,6*T1},  {FAs4,6*T1},  {FAs4,4*T1},                                // 20-36
-    {LA,6*T1},    {LA,6*T1},    {LA,4*T1},                                  // 36-52
-    {MI,4*T1},    {MI,6*T1},    {MI,2*T1},    {0,2*T1},                     // 52-64, silencio 64-66
-    {MI,4*T1},    {MI,4*T1},    {MI,2*T1},    {0,2*T1},                     // 66-76, silencio 76-78
-    {FAs4,4*T1},  {FAs4,4*T1},  {FAs4,2*T1},                                // 78-88
-    {LA,4*T1},    {LA,4*T1},    {LA,2*T1}                                   // 88-98
+    {0,4*T1},                                                               
+    {MI,6*T1},    {MI,6*T1},    {MI,4*T1},                                  
+    {FAs4,6*T1},  {FAs4,6*T1},  {FAs4,4*T1},                                
+    {LA,6*T1},    {LA,6*T1},    {LA,4*T1},                                  
+    {MI,4*T1},    {MI,6*T1},    {MI,2*T1},    {0,2*T1},                     
+    {MI,4*T1},    {MI,4*T1},    {MI,2*T1},    {0,2*T1},                     
+    {FAs4,4*T1},  {FAs4,4*T1},  {FAs4,2*T1},                                
+    {LA,4*T1},    {LA,4*T1},    {LA,2*T1}                                   
 };
 
-/* Cancion 2: FNAF - melodia*/
 static const nota_t MEL2[] PROGMEM = {
     {SI,2*T2},    {DOs5,2*T2},  {SI,1*T2},    {SOLs4,2*T2},
     {SOLs4,2*T2}, {SOLs4,2*T2}, {FAs4,1*T2},  {SOLs4,2*T2},
-    {LA,1*T2},    {SOLs4,4*T2},                                 // 0-19
-    {LA,2*T2},    {FAs4,2*T2},  {SI,1*T2},    {SOLs4,4*T2},   // 19-28
-    {MI,2*T2},    {DOs4,2*T2},  {FAs4,1*T2},  {DO,4*T2},      // 28-37  ("Do 4" = Do natural)
-    {MI,2*T2},    {REs4,1*T2},  {DOs4,1*T2},  {SI3,2*T2},     // 37-43
-    {MI,2*T2},    {SOLs4,1*T2}, {SI,1*T2},    {DO2,1*T2},     // 43-48  ("Do 1" = Do natural, una octava arriba)
-    {SI,2*T2},    {LA,2*T2}                                     // 48-52
+    {LA,1*T2},    {SOLs4,4*T2},                                 
+    {LA,2*T2},    {FAs4,2*T2},  {SI,1*T2},    {SOLs4,4*T2},   
+    {MI,2*T2},    {DOs4,2*T2},  {FAs4,1*T2},  {DO,4*T2},      
+    {MI,2*T2},    {REs4,1*T2},  {DOs4,1*T2},  {SI3,2*T2},     
+    {MI,2*T2},    {SOLs4,1*T2}, {SI,1*T2},    {DO2,1*T2},     
+    {SI,2*T2},    {LA,2*T2}                                     
 };
 
-/* Cancion 2: FNAF - bajo */
 static const nota_t BAJO2[] PROGMEM = {
-    {0,19*T2},                                                  // entra en el La 2 (tiempo 19)
-    {DOs4,2*T2}, {MI,2*T2},  {0,1*T2},                          // 19-23, silencio 23-24
-    {REs4,2*T2}, {FAs4,2*T2},{DOs4,2*T2},{MI,2*T2}, {0,1*T2}, // 24-32, silencio 32-33
-    {REs4,2*T2},{SOLs4,2*T2},{DOs4,2*T2},{DOs4,2*T2},{MI,2*T2},{0,2*T2},  // 33-43, silencio 43-45
-    {SOLs4,2*T2},{0,1*T2},                                      // 45-47, silencio 47-48
-    {FAs4,2*T2}                                                 // 48-50
+    {0,19*T2},                                                  
+    {DOs4,2*T2}, {MI,2*T2},  {0,1*T2},                          
+    {REs4,2*T2}, {FAs4,2*T2},{DOs4,2*T2},{MI,2*T2}, {0,1*T2}, 
+    {REs4,2*T2},{SOLs4,2*T2},{DOs4,2*T2},{DOs4,2*T2},{MI,2*T2},{0,2*T2},  
+    {SOLs4,2*T2},{0,1*T2},                                      
+    {FAs4,2*T2}                                                 
 };
 
-/* Cancion 3: He's a Pirate - melodia*/
 static const nota_t MEL3[] PROGMEM = {
     {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},
     {FA5,2*T3},  {FA5,2*T3},  {FA5,1*T3},  {SOL5,1*T3}, {MI5,2*T3},  {MI5,2*T3},  {RE5,1*T3},  {DO5,1*T3},
     {DO5,1*T3},  {RE5,2*T3},  {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},
     {FA5,2*T3},  {FA5,2*T3},  {FA5,1*T3},  {SOL5,1*T3}, {MI5,2*T3},  {MI5,2*T3},  {RE5,1*T3},  {DO5,1*T3},
-
     {RE5,2*T3},  {LA,1*T3},   {DO5,1*T3},  {RE5,2*T3},  {RE5,2*T3},  {RE5,1*T3},  {FA5,1*T3},
     {SOL5,2*T3}, {SOL5,2*T3}, {SOL5,1*T3},
     {LA5,1*T3},  {LAs5,1*T3}, {LAs5,1*T3}, {LA5,1*T3},  {LA5,1*T3},  {LA5,1*T3},
     {RE5,2*T3},  {RE5,1*T3},  {MI5,1*T3},  {FA5,2*T3},  {FA5,2*T3}
 };
 
-/* Cancion 3: He's a Pirate - bajo */
 static const nota_t BAJO3[] PROGMEM = {
-    {0,2*T3},                                                   // 0-2
-    {RE,4*T3},   {0,2*T3},                                      // 2-6, silencio 6-8
-    {LAs3,4*T3}, {0,2*T3},                                      // 8-12, silencio 12-14
-    {LA3,4*T3},  {0,2*T3},                                      // 14-18, silencio 18-20
-    {RE,4*T3},   {0,1*T3},                                      // 20-24, silencio 24-25
-    {LAs3,4*T3}, {0,2*T3},                                      // 25-29, silencio 29-31
-    {FA,4*T3},   {0,2*T3},                                      // 31-35, silencio 35-37
-    {DO,4*T3},   {0,2*T3},                                      // 37-41, silencio 41-43
-    {RE,4*T3},                                                  // 43-47  (hoja 2)
-    {RE,4*T3},   {0,2*T3},                                      // 47-51, silencio 51-53
-    {LAs3,4*T3}, {0,2*T3},                                      // 53-57, silencio 57-59
-    {SOL,4*T3},                                                 // 59-63
-    {RE,4*T3},   {0,1*T3},                                      // 63-67, silencio 67-68
-    {LAs3,4*T3}                                                 // 68-72
+    {0,2*T3},                                                   
+    {RE,4*T3},   {0,2*T3},                                      
+    {LAs3,4*T3}, {0,2*T3},                                      
+    {LA3,4*T3},  {0,2*T3},                                      
+    {RE,4*T3},   {0,1*T3},                                      
+    {LAs3,4*T3}, {0,2*T3},                                      
+    {FA,4*T3},   {0,2*T3},                                      
+    {DO,4*T3},   {0,2*T3},                                      
+    {RE,4*T3},                                                  
+    {RE,4*T3},   {0,2*T3},                                      
+    {LAs3,4*T3}, {0,2*T3},                                      
+    {SOL,4*T3},                                                 
+    {RE,4*T3},   {0,1*T3},                                      
+    {LAs3,4*T3}                                                 
 };
 
 static const char NOM1[] PROGMEM = "The Sims";
@@ -156,3 +149,58 @@ static const char NOMBRES[8][9] PROGMEM = {
 /*Maquina de estados*/
 typedef enum { ST_INICIO, ST_PIANO, ST_CANCION } estado_t;
 static estado_t estado = ST_INICIO;
+
+/*Tiempo: Timer0 CTC, 1 ms*/
+static volatile uint32_t ms_count = 0;
+ISR(TIMER0_COMPA_vect) { ms_count++; }
+
+static void timer0_init(void)
+{
+    TCCR0A = (1 << WGM01);                  // CTC
+    OCR0A  = 249;                           // 16 MHz / 64 / 250 = 1 kHz
+    TCCR0B = (1 << CS01) | (1 << CS00);     // prescaler 64
+    TIMSK0 = (1 << OCIE0A);
+}
+
+static uint32_t millis(void)
+{
+    uint8_t s = SREG;
+    cli();
+    uint32_t m = ms_count;
+    SREG = s;
+    return m;
+}
+
+/*Buzzer 1 (melodia / piano): Timer1 Fast PWM, OC1A = PB1*/
+static void tono(uint16_t f)
+{
+    if (f == 0) {
+        TCCR1A = 0;
+        TCCR1B = 0;
+        PORTB &= ~(1 << PB1);
+        return;
+    }
+    uint32_t top = (F_CPU / (8UL * f)) - 1;
+    DDRB |= (1 << PB1);
+    ICR1  = (uint16_t)top;
+    OCR1A = (uint16_t)(top / 2);                   // duty 50 %
+    TCNT1 = 0;
+    TCCR1A = (1 << COM1A1) | (1 << WGM11);
+    TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);  // prescaler 8
+}
+
+/*Buzzer 2 (bajo): Timer2 CTC con toggle, OC2A = PB3*/
+static void tono2(uint16_t f)
+{
+    if (f == 0) {
+        TCCR2A = 0;
+        TCCR2B = 0;
+        PORTB &= ~(1 << PB3);
+        return;
+    }
+    DDRB |= (1 << PB3);
+    OCR2A = (F_CPU / (2UL * 256 * f)) - 1;
+    TCNT2 = 0;
+    TCCR2A = (1 << COM2A0) | (1 << WGM21);
+    TCCR2B = (1 << CS22) | (1 << CS21);                   // prescaler 256
+}
