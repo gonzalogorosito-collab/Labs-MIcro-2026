@@ -248,3 +248,82 @@ static int16_t uart_rx_nb(void)                         // -1 si no hay dato
     if (UCSR0A & (1 << RXC0)) return UDR0;
     return -1;
 }
+
+/*I2C (TWI)*/
+static void i2c_setup(void)
+{
+    PORTC |= (1 << PC4) | (1 << PC5);                     // pull-ups internos 
+    TWSR = 0x00;                                           // prescaler 1
+    TWBR = 24;
+    TWCR = (1 << TWEN);
+    _delay_us(10);
+}
+
+static uint8_t twi_espera(void)                         // 0 si se agota el tiempo
+{
+    uint16_t t = 60000;
+    while (!(TWCR & (1 << TWINT))) {
+        if (--t == 0) return 0;
+    }
+    return 1;
+}
+
+static uint8_t i2c_probe(uint8_t addr)                  // 1 si alguien responde en esa direccion
+{
+    uint8_t ok = 0;
+    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);    // START
+    if (twi_espera()) {
+        TWDR = (uint8_t)(addr << 1);                      // SLA+W
+        TWCR = (1 << TWINT) | (1 << TWEN);
+        if (twi_espera()) ok = ((TWSR & 0xF8) == 0x18);  // ACK
+    }
+    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);    // STOP
+    _delay_us(20);
+    return ok;
+}
+
+/* LCD por I2C */
+static void lcd_char(char c)
+{
+    if (lcd_ok) twi_lcd_dwr(c);
+}
+
+static void lcd_cursor(uint8_t fila, uint8_t col)
+{
+    if (lcd_ok) twi_lcd_cmd(0x80 | ((fila ? 0x40 : 0x00) + col));
+}
+
+static uint8_t lcd_puts_P(const char *s)
+{
+    uint8_t n = 0;
+    char c;
+    while ((c = pgm_read_byte(s++))) { lcd_char(c); n++; }
+    return n;
+}
+
+static void lcd_pad(uint8_t usados)
+{
+    while (usados++ < 16) lcd_char(' ');
+}
+
+static void lcd_pantalla_inicio(void)
+{
+    lcd_cursor(0, 0); lcd_pad(lcd_puts_P(PSTR("PIANO ATmega328P")));
+    lcd_cursor(1, 0); lcd_pad(lcd_puts_P(PSTR("Lab 3 - Prob. D")));
+}
+
+static void lcd_pantalla_piano(uint8_t b)
+{
+    uint8_t n;
+    lcd_cursor(0, 0); lcd_pad(lcd_puts_P(PSTR("Modo: PIANO")));
+    lcd_cursor(1, 0);
+    if (b) n = lcd_puts_P(NOMBRES[b - 1]);
+    else   n = lcd_puts_P(PSTR("Toca una tecla"));
+    lcd_pad(n);
+}
+
+static void lcd_pantalla_cancion(const char *nombre)
+{
+    lcd_cursor(0, 0); lcd_pad(lcd_puts_P(PSTR("Modo: CANCION")));
+    lcd_cursor(1, 0); lcd_pad(lcd_puts_P(nombre));
+}
