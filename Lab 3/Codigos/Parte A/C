@@ -12,6 +12,9 @@
 // Pin 0 (PD0)  -> RX de la USART
 // Pin 1 (PD1)  -> TX de la USART
 // Pin 2 (PD2)  -> DATA del DHT11
+// Pin 4 (PD4)  -> IN2 del L298N
+// Pin 6 (PD6)  -> ENA del L298N (PWM, OC0A)
+// Pin 7 (PD7)  -> IN1 del L298N
 // A4 (PC4)     -> SDA del módulo LCD I2C
 // A5 (PC5)     -> SCL del módulo LCD I2C
 //==========================================================
@@ -26,6 +29,14 @@
 #define BAUD       9600
 #define UBRR_VAL   ((F_CPU / 16 / BAUD) - 1)
 #define RX_LEN     16
+
+#define MOTOR_ENA    PD6
+#define MOTOR_IN1    PD7
+#define MOTOR_IN2    PD4
+
+#define DUTY_BAJA    102        // 40 %
+#define DUTY_MEDIA   178        // 70 %
+#define DUTY_ALTA    255        // 100 %
 
 volatile char    rx_buffer[RX_LEN];
 volatile uint8_t rx_idx = 0;
@@ -92,6 +103,35 @@ ISR(TIMER1_COMPA_vect)
 	{
 		t1_segundos = 0;
 		medir = 1;
+	}
+}
+
+//===================== MOTOR (L298N) ======================
+const uint8_t duty_vel[4] = {0, DUTY_BAJA, DUTY_MEDIA, DUTY_ALTA};
+
+void motor_init(void)
+{
+	DDRD  |=  (1 << MOTOR_ENA) | (1 << MOTOR_IN1) | (1 << MOTOR_IN2);
+	PORTD |=  (1 << MOTOR_IN1);                             // Sentido fijo: IN1 = 1
+	PORTD &= ~(1 << MOTOR_IN2);                             //               IN2 = 0
+
+	TCCR0A = (1 << WGM01) | (1 << WGM00);                   // Fast PWM, OC0A desconectado
+	TCCR0B = (1 << CS01);                                   // Prescaler 8 -> 7,8 kHz
+	OCR0A  = 0;
+}
+
+// --- vel: 0 = apagado, 1 = baja, 2 = media, 3 = alta ---
+void motor_set(uint8_t vel)
+{
+	if (vel == 0)
+	{
+		TCCR0A &= ~(1 << COM0A1);                           // Desconecta OC0A del pin
+		PORTD  &= ~(1 << MOTOR_ENA);                        // ENA en 0: motor apagado
+	}
+	else
+	{
+		OCR0A   = duty_vel[vel];
+		TCCR0A |= (1 << COM0A1);                            // Conecta OC0A: PWM no invertido
 	}
 }
 
@@ -162,6 +202,7 @@ uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
 int main(void)
 {
 	uint8_t temp, hum, estado;
+	uint8_t vel;
 	char linea[17];
 	char msg[40];
 
@@ -170,6 +211,7 @@ int main(void)
 
 	uart_init();
 	timer1_init();
+	motor_init();
 	twi_init();
 	_delay_ms(50);
 	twi_lcd_init();
@@ -209,12 +251,20 @@ int main(void)
 			}
 		}
 
-		// --- Atención de comandos recibidos por UART ---
+				// --- Atención de comandos recibidos por UART ---
 		if (rx_linea_lista)
 		{
-			uart_print("Recibido: ");
-			uart_print((const char *)rx_buffer);
-			uart_print("\r\n");
+			if (rx_buffer[0] == 'V' && rx_buffer[1] >= '0' && rx_buffer[1] <= '3' && rx_buffer[2] == '\0')
+			{
+				vel = rx_buffer[1] - '0';
+				motor_set(vel);
+				sprintf(msg, "Ventilador: velocidad %u\r\n", vel);
+				uart_print(msg);
+			}
+			else
+			{
+				uart_print("Comando no reconocido\r\n");
+			}
 			rx_linea_lista = 0;
 		}
 	}
