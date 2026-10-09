@@ -1,1 +1,102 @@
+//==================== MAPEO DE PINES ====================
+// PD0 (RXD)  <- TX del terminal / PC
+// PD1 (TXD)  -> RX del terminal / PC
+// PC0 (ADC0) <- LDR (divisor resistivo)
+// PC1 (ADC1) <- Potenciometro acoplado al eje
+// PD6 (OC0A) -> ENA del L298N (PWM)
+// PD7        -> IN1 del L298N
+// PB0        -> IN2 del L298N
+//========================================================
 
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <stdint.h>
+
+#define BAUD        9600
+#define UBRR_VAL    ((F_CPU / (16UL * BAUD)) - 1)   // 103 -> error 0.2%
+#define RX_BUF_LEN  8
+
+//==================== VARIABLES GLOBALES ====================
+volatile char    rx_buf[RX_BUF_LEN];
+volatile uint8_t rx_idx = 0;
+volatile uint8_t linea_lista = 0;     // 1 = hay una linea completa para procesar
+
+uint8_t setpoint = 50;                // Setpoint de iluminacion en %
+
+//==================== UART ====================
+void uart_init(void) {
+    UBRR0H = (uint8_t)(UBRR_VAL >> 8);
+    UBRR0L = (uint8_t)UBRR_VAL;
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);  // RX, TX e interrupcion de RX
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);                // 8N1
+}
+
+void uart_putc(char c) {
+    while (!(UCSR0A & (1 << UDRE0)));   // Esperar buffer de transmision vacio
+    UDR0 = c;
+}
+
+void uart_puts(const char *s) {
+    while (*s) uart_putc(*s++);
+}
+
+void uart_putu16(uint16_t n) {
+    char d[5];
+    uint8_t i = 0;
+    do { d[i++] = '0' + (n % 10); n /= 10; } while (n);
+    while (i) uart_putc(d[--i]);
+}
+
+// --- Recepcion: acumula caracteres hasta fin de linea ---
+ISR(USART_RX_vect) {
+    char c = UDR0;
+    if (linea_lista) return;                     // main aun no proceso la linea anterior
+    if (c == '\r' || c == '\n') {
+        if (rx_idx > 0) {                        // ignora lineas vacias (CR+LF)
+            rx_buf[rx_idx] = '\0';
+            linea_lista = 1;
+        }
+    } else if (rx_idx < RX_BUF_LEN - 1) {
+        rx_buf[rx_idx++] = c;
+    }
+}
+
+//==================== PARSEO DEL SETPOINT ====================
+// Devuelve 1 si la linea es un entero valido entre 0 y 100
+uint8_t parsear_setpoint(const volatile char *s, uint8_t *valor) {
+    uint16_t v = 0;
+    if (*s == '\0') return 0;
+    while (*s) {
+        if (*s < '0' || *s > '9') return 0;
+        v = v * 10 + (*s - '0');
+        if (v > 100) return 0;
+        s++;
+    }
+    *valor = (uint8_t)v;
+    return 1;
+}
+
+//==================== MAIN ====================
+int main(void) {
+    uart_init();
+    sei();
+
+    uart_puts("Control de iluminacion - Ingrese setpoint (0-100):\r\n");
+
+    while (1) {
+        if (linea_lista) {
+            uint8_t nuevo;
+            if (parsear_setpoint(rx_buf, &nuevo)) {
+                setpoint = nuevo;
+                uart_puts("Setpoint: ");
+                uart_putu16(setpoint);
+                uart_puts("%\r\n");
+            } else {
+                uart_puts("Error: ingrese un entero entre 0 y 100\r\n");
+            }
+            rx_idx = 0;
+            linea_lista = 0;          // Libera la ISR para la proxima linea
+        }
+    }
+}
