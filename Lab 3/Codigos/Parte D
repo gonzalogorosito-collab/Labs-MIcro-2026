@@ -204,3 +204,47 @@ static void tono2(uint16_t f)
     TCCR2A = (1 << COM2A0) | (1 << WGM21);
     TCCR2B = (1 << CS22) | (1 << CS21);                   // prescaler 256
 }
+
+/* UART*/
+static void uart_init(void)
+{
+    UBRR0H = (uint8_t)(UBRRVAL >> 8);
+    UBRR0L = (uint8_t)(UBRRVAL & 0xFF);
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);               // 8N1
+}
+
+static void uart_tx(char c)
+{
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = c;
+}
+
+static void uart_puts_P(const char *s)
+{
+    char c;
+    while ((c = pgm_read_byte(s++))) uart_tx(c);
+}
+
+static void uart_hex8(uint8_t v)
+{
+    static const char h[] = "0123456789ABCDEF";
+    uart_tx(h[v >> 4]);
+    uart_tx(h[v & 0x0F]);
+}
+
+#if DEBUG_NOTAS
+static void uart_uint(uint16_t v)
+{
+    char b[5];
+    uint8_t i = 0;
+    do { b[i++] = '0' + (v % 10); v /= 10; } while (v);
+    while (i) uart_tx(b[--i]);
+}
+#endif
+
+static int16_t uart_rx_nb(void)                         // -1 si no hay dato
+{
+    if (UCSR0A & (1 << RXC0)) return UDR0;
+    return -1;
+}
