@@ -1,1 +1,95 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdio.h>
 
+// --- Librerías de la LCD ---
+#define PCF8574 0x27
+#include "twi_lcd.h"
+
+#define NUM_PIXELS 64
+
+// --- Control Servomotor por Timer 1 (Pin PB1 / OC1A) ---
+void Servo_Init(void) {
+	DDRB |= (1 << PB1);
+	TCCR1A = (1 << COM1A1) | (1 << WGM11);
+	TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);
+	ICR1 = 39999;
+}
+
+void Servo_SetAngle_OCR(uint16_t ocr_val) {
+	OCR1A = ocr_val;
+}
+
+// --- LCD ---
+void LCD_Init(void) {
+	twi_init();
+	DDRC  &= ~(1 << PC0);
+	PORTC &= ~(1 << PC0);
+	twi_lcd_init();
+	twi_lcd_cmd(0x0C);
+}
+
+void LCD_Print(const char *str) {
+	twi_lcd_msg(str);
+}
+
+void LCD_SetCursor(uint8_t row, uint8_t col) {
+	uint8_t addr = (row == 0) ? (0x80 + col) : (0xC0 + col);
+	twi_lcd_cmd(addr);
+}
+
+// --- UART ---
+void UART_Init(unsigned int ubrr) {
+	UBRR0H = (unsigned char)(ubrr >> 8);
+	UBRR0L = (unsigned char)ubrr;
+	UCSR0B = (1 << TXEN0);
+	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+void UART_Transmit(unsigned char data) {
+	while (!(UCSR0A & (1 << UDRE0)));
+	UDR0 = data;
+}
+
+void UART_Print(const char *s) {
+	while (*s) {
+		UART_Transmit(*s++);
+	}
+}
+
+// --- ADC ---
+void ADC_Init(void) {
+	ADMUX = (1 << REFS0);
+	ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+}
+
+uint16_t ADC_Read(uint8_t channel) {
+	ADMUX = (ADMUX & 0xF0) | (channel & 0x0F);
+	ADCSRA |= (1 << ADSC);
+	while (ADCSRA & (1 << ADSC));
+	return ADC;
+}
+
+uint16_t ADC_Read_Smooth(uint8_t channel) {
+	uint32_t sum = 0;
+	uint8_t samples = 10;
+	for (uint8_t i = 0; i < samples; i++) {
+		sum += ADC_Read(channel);
+	}
+	return (uint16_t)(sum / samples);
+}
+
+long map_value(long x, long in_min, long in_max, long out_min, long out_max) {
+	if (x < in_min) x = in_min;
+	if (x > in_max) x = in_max;
+	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+int main(void) {
+	UART_Init(103);
+	LCD_Init();
+	ADC_Init();
+	Servo_Init();
+	while (1) {}
+}
