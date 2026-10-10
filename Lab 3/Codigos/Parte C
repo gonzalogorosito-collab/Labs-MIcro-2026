@@ -3,13 +3,14 @@
 #include <util/delay.h>
 #include <stdio.h>
 
-// --- Librerías de la LCD ---
+// --- SELECCIÓN DE ENTORNO (Comentado para usar en FÍSICO) ---
+// // #define MODO_SIMULACION
+
 #define PCF8574 0x27
 #include "twi_lcd.h"
 
 #define NUM_PIXELS 64
 
-// --- Control Servomotor por Timer 1 (Pin PB1 / OC1A) ---
 void Servo_Init(void) {
 	DDRB |= (1 << PB1);
 	TCCR1A = (1 << COM1A1) | (1 << WGM11);
@@ -21,7 +22,44 @@ void Servo_SetAngle_OCR(uint16_t ocr_val) {
 	OCR1A = ocr_val;
 }
 
-// --- LCD ---
+// --- Control WS2811 / WS2812 en C ---
+void send_ws2812_all(uint8_t r, uint8_t g, uint8_t b) {
+	for (uint16_t i = 0; i < NUM_PIXELS; i++) {
+		// #ifdef MODO_SIMULACION
+		// uint8_t data[3] = {g, r, b}; // Orden GRB para la simulación
+		// #else
+		uint8_t data[3] = {b, r, g}; // Orden B, R, G exacto para tu tira
+		// #endif
+		
+		uint8_t *ptr = data;
+		uint8_t bytesLeft = 3;
+
+		__asm__ __volatile__ (
+		"L_byte:\n\t"
+		"ld r24, %a[p]+\n\t"
+		"ldi r25, 8\n\t"
+		"L_bit:\n\t"
+		"sbi %[port], %[pin]\n\t"
+		"lsl r24\n\t"
+		"brcc L_zero\n\t"
+		"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
+		"cbi %[port], %[pin]\n\t"
+		"rjmp L_next\n\t"
+		"L_zero:\n\t"
+		"cbi %[port], %[pin]\n\t"
+		"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
+		"L_next:\n\t"
+		"subi r25, 1\n\t"
+		"brne L_bit\n\t"
+		"subi %[cnt], 1\n\t"
+		"brne L_byte\n\t"
+		: [p] "+e" (ptr), [cnt] "+d" (bytesLeft)
+		: [port] "i" (_SFR_IO_ADDR(PORTD)), [pin] "i" (PD6)
+		: "r24", "r25", "cc", "memory"
+		);
+	}
+}
+
 void LCD_Init(void) {
 	twi_init();
 	DDRC  &= ~(1 << PC0);
@@ -39,7 +77,6 @@ void LCD_SetCursor(uint8_t row, uint8_t col) {
 	twi_lcd_cmd(addr);
 }
 
-// --- UART ---
 void UART_Init(unsigned int ubrr) {
 	UBRR0H = (unsigned char)(ubrr >> 8);
 	UBRR0L = (unsigned char)ubrr;
@@ -58,7 +95,6 @@ void UART_Print(const char *s) {
 	}
 }
 
-// --- ADC ---
 void ADC_Init(void) {
 	ADMUX = (1 << REFS0);
 	ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
@@ -87,6 +123,7 @@ long map_value(long x, long in_min, long in_max, long out_min, long out_max) {
 }
 
 int main(void) {
+	DDRD |= (1 << PD6);
 	UART_Init(103);
 	LCD_Init();
 	ADC_Init();
