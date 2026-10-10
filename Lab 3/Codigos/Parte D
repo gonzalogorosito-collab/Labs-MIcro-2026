@@ -374,3 +374,153 @@ static uint8_t boton_estable(void)
     }
     return estable;
 }
+
+/* Voces y polifonía */
+typedef struct {
+    const nota_t *datos;
+    uint8_t  len, pos, sonando;
+    uint32_t t_fin, t_apagar;
+    void (*tono)(uint16_t);
+} voz_t;
+
+static voz_t vozM, vozB;
+
+static void voz_iniciar(voz_t *v, const nota_t *d, uint8_t len,
+                        void (*t)(uint16_t), uint32_t t0)
+{
+    v->datos = d;  v->len = len;  v->pos = 0;  v->sonando = 0;
+    v->t_fin = t0; v->t_apagar = 0; v->tono = t;
+}
+
+static uint8_t voz_paso(voz_t *v)
+{
+    uint32_t ahora = millis();
+
+    if (v->sonando && ahora >= v->t_apagar) {
+        v->tono(0);
+        v->sonando = 0;
+    }
+    if (ahora < v->t_fin) return 1;
+    if (v->pos >= v->len) return 0;
+
+    uint16_t freq = pgm_read_word(&v->datos[v->pos].freq);
+    uint16_t dur  = pgm_read_word(&v->datos[v->pos].dur);
+    v->pos++;
+#if DEBUG_NOTAS
+    uart_tx(v->tono == tono ? '#' : 'B');
+    uart_uint(v->pos);
+    uart_tx(' ');
+    uart_uint(freq);
+    uart_puts_P(PSTR(" Hz\r\n"));
+#endif
+    v->t_fin   += dur;                                      
+    v->t_apagar = v->t_fin - (dur > GAP_MS ? GAP_MS : 0);
+    v->tono(freq);
+    v->sonando = (freq != 0);
+    return 1;
+}
+
+static void cancion_iniciar(uint8_t n)
+{
+    const cancion_t *c = &CANCIONES[n];
+    if (c->len_mel == 0 && c->len_bajo == 0) {
+        uart_puts_P(c->nombre);
+        uart_puts_P(PSTR(": sin notas todavia\r\n"));
+        return;
+    }
+    uint32_t t0 = millis();
+    voz_iniciar(&vozM, c->mel,  c->len_mel,  tono,  t0);
+    voz_iniciar(&vozB, c->bajo, c->len_bajo, tono2, t0);
+    estado = ST_CANCION;
+    lcd_pantalla_cancion(c->nombre);
+    uart_puts_P(PSTR("Reproduciendo: "));
+    uart_puts_P(c->nombre);
+    uart_puts_P(PSTR("\r\n"));
+}
+
+static void cancion_detener(void)
+{
+    tono(0);
+    tono2(0);
+    estado = ST_PIANO;
+    lcd_pantalla_piano(0);
+    uart_puts_P(PSTR("Modo piano\r\n"));
+}
+
+/* main */
+int main(void)
+{
+    uint8_t  ultimo_boton = 0, beep_off = 0, a;
+    uint32_t t_inicio;
+
+    botones_init();
+    uart_init();
+    timer0_init();
+    sei();
+
+    uart_puts_P(PSTR("Piano electronico\r\n"));
+    uart_puts_P(PSTR("1) The Sims  2) FNAF  3) He's a Pirate  S) detener\r\n"));
+
+    i2c_setup();
+    lcd_ok = 0;
+    for (a = 0x20; a <= 0x3F; a++) {
+        if (i2c_probe(a)) {
+            uart_puts_P(PSTR("I2C responde en 0x"));
+            uart_hex8(a);
+            uart_puts_P(PSTR("\r\n"));
+            if (!lcd_ok) { lcd_addr = a; lcd_ok = 1; }
+        }
+    }
+
+    if (lcd_ok) {
+        twi_lcd_init();                                 
+        twi_lcd_cmd(0x0C);                                     // display on
+        lcd_pantalla_inicio();
+    } else {
+        uart_puts_P(PSTR("LCD I2C no detectado\r\n"));
+    }
+
+    t_inicio = millis();
+    tono(LA);                                                  // pitido de arranque
+
+    for (;;) {
+        int16_t c = uart_rx_nb();
+        if (c >= 0 && estado != ST_INICIO) {
+            switch (c) {
+                case '1': cancion_iniciar(0); break;
+                case '2': cancion_iniciar(1); break;
+                case '3': cancion_iniciar(2); break;
+                case 'S':
+                case 's': if (estado == ST_CANCION) cancion_detener(); break;
+                default: break;
+            }
+        }
+
+        switch (estado) {
+        case ST_INICIO: {
+            uint32_t dt = millis() - t_inicio;
+            if (!beep_off && dt >= 300) { tono(0); beep_off = 1; }
+            if (dt >= 1500) {
+                estado = ST_PIANO;
+                lcd_pantalla_piano(0);
+            }
+        } break;
+
+        case ST_PIANO: {
+            uint8_t b = boton_estable();
+            if (b != ultimo_boton) {
+                ultimo_boton = b;
+                tono(b ? NOTAS_PIANO[b - 1] : 0);                // sonido
+                lcd_pantalla_piano(b);                         // pantalla
+            }
+        } break;
+
+        case ST_CANCION: {
+            ultimo_boton = 0;
+            uint8_t m = voz_paso(&vozM);
+            uint8_t b = voz_paso(&vozB);
+            if (!m && !b) cancion_detener();
+        } break;
+        }
+    }
+}
