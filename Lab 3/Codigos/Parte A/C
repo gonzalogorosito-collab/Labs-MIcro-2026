@@ -38,12 +38,22 @@
 #define DUTY_MEDIA   178        // 70 %
 #define DUTY_ALTA    255        // 100 %
 
+#define ACC_CALEF    0
+#define ACC_CONFORT  1
+#define ACC_BAJA     2
+#define ACC_MEDIA    3
+#define ACC_ALTA     4
+
+#define PM_DEFECTO   21         // Confort por defecto: 16-25 C
+
 volatile char    rx_buffer[RX_LEN];
 volatile uint8_t rx_idx = 0;
 volatile uint8_t rx_linea_lista = 0;
 
 volatile uint8_t t1_segundos = 0;
 volatile uint8_t medir = 1;                 // En 1 para medir apenas arranca
+
+uint8_t punto_medio = PM_DEFECTO;
 
 //======================== USART ===========================
 void uart_init(void)
@@ -91,7 +101,7 @@ ISR(USART_RX_vect)
 void timer1_init(void)
 {
 	TCCR1A = 0x00;
-	TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);     // CTC, prescaler 1024
+	TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);      // CTC, prescaler 1024
 	OCR1A  = 15624;                                         // 16 MHz / 1024 / 15625 = 1 Hz
 	TIMSK1 = (1 << OCIE1A);                                 // Interrupción por comparación A
 }
@@ -133,6 +143,24 @@ void motor_set(uint8_t vel)
 		OCR0A   = duty_vel[vel];
 		TCCR0A |= (1 << COM0A1);                            // Conecta OC0A: PWM no invertido
 	}
+}
+
+//=================== LÓGICA DE CONTROL ====================
+const uint8_t vel_acc[5]   = {0, 0, 1, 2, 3};
+const char   *lcd_acc[5]   = {"CALEF", "OK   ", "BAJA ", "MEDIA", "ALTA "};
+const char   *uart_acc[5]  = {"Calefactor ON", "Confort", "Ventilador baja",
+                              "Ventilador media", "Ventilador alta"};
+
+// --- Tramo según la distancia de la temperatura al punto medio ---
+uint8_t decidir_accion(uint8_t temp, uint8_t pm)
+{
+	int16_t d = (int16_t)temp - (int16_t)pm;
+
+	if (d <= -6) return ACC_CALEF;
+	if (d <=  4) return ACC_CONFORT;
+	if (d <= 14) return ACC_BAJA;
+	if (d <= 24) return ACC_MEDIA;
+	return ACC_ALTA;
 }
 
 //======================== DHT11 ===========================
@@ -202,7 +230,7 @@ uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
 int main(void)
 {
 	uint8_t temp, hum, estado;
-	uint8_t vel;
+	uint8_t accion;
 	char linea[17];
 	char msg[40];
 
@@ -222,7 +250,7 @@ int main(void)
 
 	while (1)
 	{
-		// --- Medición cada 5 s ---
+		// --- Medición cada 5 s y decisión de la acción ---
 		if (medir)
 		{
 			medir = 0;
@@ -230,15 +258,22 @@ int main(void)
 
 			if (estado == DHT_OK)
 			{
-				sprintf(linea, "Temp: %2u C      ", temp);
+				accion = decidir_accion(temp, punto_medio);
+				motor_set(vel_acc[accion]);
+
+				sprintf(linea, "Temp: %2u C ", temp);
 				twi_lcd_cmd(0x80);
 				twi_lcd_msg(linea);
-				sprintf(linea, "Hum:  %2u %%      ", hum);
+				twi_lcd_msg(lcd_acc[accion]);
+
+				sprintf(linea, "Rango: %2u-%2u C  ", punto_medio - 5, punto_medio + 4);
 				twi_lcd_cmd(0xC0);
 				twi_lcd_msg(linea);
 
-				sprintf(msg, "Temp: %u C | Hum: %u %%\r\n", temp, hum);
+				sprintf(msg, "Temp: %u C | Accion: ", temp);
 				uart_print(msg);
+				uart_print(uart_acc[accion]);
+				uart_print("\r\n");
 			}
 			else
 			{
@@ -251,20 +286,10 @@ int main(void)
 			}
 		}
 
-				// --- Atención de comandos recibidos por UART ---
+		// --- Atención de comandos recibidos por UART ---
 		if (rx_linea_lista)
 		{
-			if (rx_buffer[0] == 'V' && rx_buffer[1] >= '0' && rx_buffer[1] <= '3' && rx_buffer[2] == '\0')
-			{
-				vel = rx_buffer[1] - '0';
-				motor_set(vel);
-				sprintf(msg, "Ventilador: velocidad %u\r\n", vel);
-				uart_print(msg);
-			}
-			else
-			{
-				uart_print("Comando no reconocido\r\n");
-			}
+			uart_print("Comando no reconocido\r\n");
 			rx_linea_lista = 0;
 		}
 	}
