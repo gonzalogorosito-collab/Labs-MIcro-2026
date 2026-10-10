@@ -327,3 +327,50 @@ static void lcd_pantalla_cancion(const char *nombre)
     lcd_cursor(0, 0); lcd_pad(lcd_puts_P(PSTR("Modo: CANCION")));
     lcd_cursor(1, 0); lcd_pad(lcd_puts_P(nombre));
 }
+
+/* Botones */
+#define MASK_C 0x0F
+#define MASK_D ((1 << PD2) | (1 << PD3))
+#define MASK_B ((1 << PB0) | (1 << PB2))
+
+static uint8_t rep_c, rep_d, rep_b;
+
+static void botones_init(void)
+{
+    DDRC  &= ~MASK_C;  PORTC |= MASK_C;
+    DDRD  &= ~MASK_D;  PORTD |= MASK_D;
+    DDRB  &= ~MASK_B;  PORTB |= MASK_B;
+    _delay_ms(20);
+    rep_c = PINC & MASK_C;
+    rep_d = PIND & MASK_D;
+    rep_b = PINB & MASK_B;
+}
+
+static uint8_t leer_boton(void)
+{
+    uint8_t c = (PINC ^ rep_c) & MASK_C;
+    uint8_t d = (PIND ^ rep_d) & MASK_D;
+    uint8_t b = (PINB ^ rep_b) & MASK_B;
+    if (c & (1 << PC0)) return 1;
+    if (c & (1 << PC1)) return 2;
+    if (c & (1 << PC2)) return 3;
+    if (c & (1 << PC3)) return 4;
+    if (d & (1 << PD2)) return 5;
+    if (d & (1 << PD3)) return 6;
+    if (b & (1 << PB0)) return 7;
+    if (b & (1 << PB2)) return 8;
+    return 0;
+}
+
+static uint8_t boton_estable(void)
+{
+    static uint8_t ultimo = 0, estable = 0;
+    static uint32_t t = 0;
+    if (millis() - t >= 10) {
+        t = millis();
+        uint8_t lec = leer_boton();
+        if (lec == ultimo) estable = lec;
+        ultimo = lec;
+    }
+    return estable;
+}
