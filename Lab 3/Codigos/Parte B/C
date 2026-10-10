@@ -19,12 +19,19 @@
 #define PERIODO_TELEM  20     // 20 ticks x 10 ms = 200 ms
 #define CANAL_LDR      0
 #define CANAL_POT      1
+#define POT_MIN        50     // Limite de carrera: persiana cerrada
+#define POT_MAX        973    // Limite de carrera: persiana abierta
+#define DIR_STOP       0
+#define DIR_HOR        1      // Horario: abre la persiana, POT sube
+#define DIR_ANTI       2      // Antihorario: cierra la persiana, POT baja
 
 //==================== VARIABLES GLOBALES ====================
 volatile char    rx_buf[RX_BUF_LEN];
 volatile uint8_t rx_idx = 0;
 volatile uint8_t linea_lista = 0;     // 1 = hay una linea completa para procesar
 volatile uint8_t tick = 0;            // 1 = paso un tick de 10 ms
+uint8_t pwm_actual = 0;               // PWM aplicado al motor (0-255)
+uint8_t dir_actual = DIR_STOP;        // Sentido de giro aplicado
 
 uint8_t setpoint = 50;                // Setpoint de iluminacion en %
 
@@ -92,6 +99,42 @@ uint16_t adc_leer(uint8_t canal) {
 	return ADC;
 }
 
+//==================== MOTOR (L298N) ====================
+void motor_init(void) {
+	DDRD |= (1 << PD6) | (1 << PD7);                       // ENA e IN1 como salidas
+	DDRB |= (1 << PB0);                                    // IN2 como salida
+	TCCR0A = (1 << COM0A1) | (1 << WGM01) | (1 << WGM00);  // Fast PWM, OC0A no invertido
+	TCCR0B = (1 << CS01) | (1 << CS00);                    // Prescaler 64 -> 16 MHz / (64 * 256) = 976 Hz
+	OCR0A = 0;
+}
+
+void motor_aplicar(uint8_t dir, uint8_t pwm, uint16_t pot) {
+	// Bloqueo por limite de carrera o PWM nulo
+	if ((dir == DIR_HOR && pot >= POT_MAX) || (dir == DIR_ANTI && pot <= POT_MIN) || pwm == 0) {
+		dir = DIR_STOP;
+		pwm = 0;
+	}
+
+	switch (dir) {
+		case DIR_HOR:                         // IN1=1, IN2=0
+		PORTD |=  (1 << PD7);
+		PORTB &= ~(1 << PB0);
+		break;
+		case DIR_ANTI:                        // IN1=0, IN2=1
+		PORTD &= ~(1 << PD7);
+		PORTB |=  (1 << PB0);
+		break;
+		default:                              // IN1=0, IN2=0: detenido aunque OC0A deje un pulso minimo con OCR0A=0
+		PORTD &= ~(1 << PD7);
+		PORTB &= ~(1 << PB0);
+		break;
+	}
+
+	OCR0A = pwm;
+	dir_actual = dir;
+	pwm_actual = pwm;
+}
+
 //==================== PARSEO DEL SETPOINT ====================
 // Devuelve 1 si la linea es un entero valido entre 0 y 100
 uint8_t parsear_setpoint(const volatile char *s, uint8_t *valor) {
@@ -109,11 +152,14 @@ uint8_t parsear_setpoint(const volatile char *s, uint8_t *valor) {
 
 //==================== MAIN ====================
 int main(void) {
-	uint8_t cont_telem = 0;
+	uint8_t  cont_telem = 0;
+	uint16_t pot = 0;
+	uint8_t  ldr_pct = 0;
 
 	uart_init();
 	adc_init();
 	timer1_init();
+	motor_init();
 	sei();
 
 	uart_puts("Control de iluminacion - Ingrese setpoint (0-100):\r\n");
@@ -134,19 +180,33 @@ int main(void) {
 			linea_lista = 0;
 		}
 
-		// --- Telemetria cada 200 ms ---
+		// --- Cada 10 ms: lectura de sensores y control del motor ---
 		if (tick) {
 			tick = 0;
+
+			uint16_t ldr_raw = adc_leer(CANAL_LDR);
+			pot     = adc_leer(CANAL_POT);
+			ldr_pct = (uint8_t)(((uint32_t)ldr_raw * 100 + 511) / 1023);  // 0-1023 -> 0-100 redondeado
+
+			// PRUEBA EN LAZO ABIERTO (se reemplaza en la Parte 4): 50% = detenido
+			if (setpoint > 50) {
+				motor_aplicar(DIR_HOR, (uint8_t)((setpoint - 50) * 255 / 50), pot);
+				} else if (setpoint < 50) {
+				motor_aplicar(DIR_ANTI, (uint8_t)((50 - setpoint) * 255 / 50), pot);
+				} else {
+				motor_aplicar(DIR_STOP, 0, pot);
+			}
+
+			// --- Telemetria cada 200 ms ---
 			if (++cont_telem >= PERIODO_TELEM) {
 				cont_telem = 0;
-
-				uint16_t ldr_raw = adc_leer(CANAL_LDR);
-				uint16_t pot     = adc_leer(CANAL_POT);
-				uint8_t  ldr_pct = (uint8_t)(((uint32_t)ldr_raw * 100 + 511) / 1023);  // 0-1023 -> 0-100 redondeado
 
 				uart_puts("SP=");   uart_putu16(setpoint);
 				uart_puts(",LDR="); uart_putu16(ldr_pct);
 				uart_puts(",POT="); uart_putu16(pot);
+				uart_puts(",PWM="); uart_putu16(pwm_actual);
+				uart_puts(",DIR=");
+				uart_putc(dir_actual == DIR_HOR ? 'H' : (dir_actual == DIR_ANTI ? 'A' : 'S'));
 				uart_puts("\r\n");
 			}
 		}
