@@ -46,7 +46,15 @@
 #define ACC_MEDIA    3
 #define ACC_ALTA     4
 
-#define PM_DEFECTO   21         // Confort por defecto: 16-25 C
+#define PM_DEFECTO   21                         // Confort por defecto: 16-25 C
+#define PM_MIN       5                          // Confort desde 0 C (mínimo del DHT11)
+#define DHT_TEMP_MAX 50                         // Máximo del DHT11
+#define DIST_ALTA    25                         // Distancia al punto medio de la ventilación alta
+#define PM_MAX       (DHT_TEMP_MAX - DIST_ALTA) // 25: ventilación alta dentro del rango del sensor
+
+#define MENU_INACTIVO  0
+#define MENU_OPCION    1
+#define MENU_VALOR     2
 
 volatile char    rx_buffer[RX_LEN];
 volatile uint8_t rx_idx = 0;
@@ -56,6 +64,7 @@ volatile uint8_t t1_segundos = 0;
 volatile uint8_t medir = 1;                 // En 1 para medir apenas arranca
 
 uint8_t punto_medio = PM_DEFECTO;
+uint8_t menu_estado = MENU_INACTIVO;
 
 //======================== USART ===========================
 void uart_init(void)
@@ -158,11 +167,164 @@ uint8_t decidir_accion(uint8_t temp, uint8_t pm)
 {
 	int16_t d = (int16_t)temp - (int16_t)pm;
 
-	if (d <= -6) return ACC_CALEF;
-	if (d <=  4) return ACC_CONFORT;
-	if (d <= 14) return ACC_BAJA;
-	if (d <= 24) return ACC_MEDIA;
+	if (d <= -6)       return ACC_CALEF;
+	if (d <=  4)       return ACC_CONFORT;
+	if (d <= 14)       return ACC_BAJA;
+	if (d < DIST_ALTA) return ACC_MEDIA;
 	return ACC_ALTA;
+}
+
+// --- Aplica la acción a motor, calefactor y LCD; devuelve la acción ---
+uint8_t aplicar_control(uint8_t temp)
+{
+	uint8_t accion;
+	char linea[17];
+
+	accion = decidir_accion(temp, punto_medio);
+	motor_set(vel_acc[accion]);
+
+	if (accion == ACC_CALEF) PORTB |=  (1 << CALEF_PIN);
+	else                     PORTB &= ~(1 << CALEF_PIN);
+
+	sprintf(linea, "Temp: %2u C ", temp);
+	twi_lcd_cmd(0x80);
+	twi_lcd_msg(linea);
+	twi_lcd_msg(lcd_acc[accion]);
+
+	sprintf(linea, "Rango: %2u-%2u C  ", punto_medio - 5, punto_medio + 4);
+	twi_lcd_cmd(0xC0);
+	twi_lcd_msg(linea);
+
+	return accion;
+}
+
+//======================= MENÚ UART ========================
+void mostrar_menu(void)
+{
+	uart_print("\r\n========== MENU ==========\r\n");
+	uart_print("1 - Cambiar punto medio\r\n");
+	uart_print("2 - Ver estado actual\r\n");
+	uart_print("0 - Salir\r\n");
+	uart_print("(Monitoreo pausado con el menu abierto)\r\n");
+	uart_print("Opcion: ");
+}
+
+void mostrar_estado(uint8_t temp, uint8_t accion, uint8_t valido)
+{
+	char msg[48];
+
+	sprintf(msg, "\r\nPunto medio: %u | Confort: %u-%u C\r\n",
+	punto_medio, punto_medio - 5, punto_medio + 4);
+	uart_print(msg);
+
+	if (valido)
+	{
+		sprintf(msg, "Ultima temp: %u C | Accion: ", temp);
+		uart_print(msg);
+		uart_print(uart_acc[accion]);
+		uart_print("\r\n");
+	}
+	else
+	{
+		uart_print("Sin mediciones validas todavia\r\n");
+	}
+}
+
+// --- Convierte texto a número; devuelve 0 si no es un entero válido ---
+uint8_t leer_numero(const char *s, uint8_t *valor)
+{
+	uint16_t n = 0;
+	uint8_t i = 0;
+
+	if (s[0] == '\0') return 0;
+
+	while (s[i] != '\0')
+	{
+		if (s[i] < '0' || s[i] > '9' || i >= 3) return 0;
+		n = n * 10 + (s[i] - '0');
+		i++;
+	}
+	*valor = (uint8_t)n;
+	return 1;
+}
+
+// --- Máquina de estados del menú; devuelve 1 si cambió el punto medio ---
+uint8_t procesar_linea(const char *cmd, uint8_t temp, uint8_t accion, uint8_t valido)
+{
+	uint8_t valor;
+	char msg[100];
+
+	switch (menu_estado)
+	{
+		case MENU_INACTIVO:
+		if ((cmd[0] == 'M' || cmd[0] == 'm') && cmd[1] == '\0')
+		{
+			menu_estado = MENU_OPCION;
+			mostrar_menu();
+		}
+		else
+		{
+			uart_print("Comando no reconocido. Envie M para abrir el menu\r\n");
+		}
+		break;
+
+		case MENU_OPCION:
+		if (cmd[0] == '1' && cmd[1] == '\0')
+		{
+			menu_estado = MENU_VALOR;
+			sprintf(msg, "\r\nIngrese el nuevo punto medio (%u-%u): ", PM_MIN, PM_MAX);
+			uart_print(msg);
+		}
+		else if (cmd[0] == '2' && cmd[1] == '\0')
+		{
+			mostrar_estado(temp, accion, valido);
+			mostrar_menu();
+		}
+		else if (cmd[0] == '0' && cmd[1] == '\0')
+		{
+			menu_estado = MENU_INACTIVO;
+			uart_print("\r\nMenu cerrado. Monitoreo reanudado\r\n");
+		}
+		else
+		{
+			uart_print("\r\nOpcion invalida\r\n");
+			mostrar_menu();
+		}
+		break;
+
+		case MENU_VALOR:
+		if (!leer_numero(cmd, &valor))
+		{
+			sprintf(msg, "\r\nValor invalido. Ingrese un entero (%u-%u): ", PM_MIN, PM_MAX);
+			uart_print(msg);
+		}
+		else if (valor > PM_MAX)
+		{
+			sprintf(msg, "\r\nRechazado: la ventilacion alta empezaria en %u C y supera el maximo del DHT11 (%u C)\r\n",
+			valor + DIST_ALTA, DHT_TEMP_MAX);
+			uart_print(msg);
+			menu_estado = MENU_OPCION;
+			mostrar_menu();
+		}
+		else if (valor < PM_MIN)
+		{
+			uart_print("\r\nRechazado: el rango de confort quedaria por debajo de 0 C (minimo del DHT11)\r\n");
+			menu_estado = MENU_OPCION;
+			mostrar_menu();
+		}
+		else
+		{
+			punto_medio = valor;
+			sprintf(msg, "\r\nPunto medio actualizado: %u | Confort: %u-%u C\r\n",
+			punto_medio, punto_medio - 5, punto_medio + 4);
+			uart_print(msg);
+			uart_print("Menu cerrado. Monitoreo reanudado\r\n");
+			menu_estado = MENU_INACTIVO;
+			return 1;
+		}
+		break;
+	}
+	return 0;
 }
 
 //======================== DHT11 ===========================
@@ -231,8 +393,9 @@ uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
 //======================== MAIN ============================
 int main(void)
 {
-	uint8_t temp, hum, estado;
-	uint8_t accion;
+	uint8_t temp = 0, hum, estado;
+	uint8_t accion = ACC_CONFORT;
+	uint8_t valido = 0;
 	char linea[17];
 	char msg[40];
 
@@ -241,7 +404,7 @@ int main(void)
 
 	DDRB  |=  (1 << CALEF_PIN);
 	PORTB &= ~(1 << CALEF_PIN);             // Calefactor apagado al iniciar
-	
+
 	uart_init();
 	timer1_init();
 	motor_init();
@@ -251,11 +414,11 @@ int main(void)
 	twi_lcd_cmd(0x0C);          // Apaga el cursor parpadeante de la librería
 
 	sei();
-	uart_print("Sistema iniciado\r\n");
+	uart_print("Sistema iniciado. Envie M para abrir el menu\r\n");
 
 	while (1)
 	{
-		// --- Medición cada 5 s y decisión de la acción ---
+		// --- Medición cada 5 s y aplicación del control ---
 		if (medir)
 		{
 			medir = 0;
@@ -263,25 +426,16 @@ int main(void)
 
 			if (estado == DHT_OK)
 			{
-				accion = decidir_accion(temp, punto_medio);
-				motor_set(vel_acc[accion]);
-				
-				if (accion == ACC_CALEF) PORTB |=  (1 << CALEF_PIN);
-				else                     PORTB &= ~(1 << CALEF_PIN);
+				valido = 1;
+				accion = aplicar_control(temp);
 
-				sprintf(linea, "Temp: %2u C ", temp);
-				twi_lcd_cmd(0x80);
-				twi_lcd_msg(linea);
-				twi_lcd_msg(lcd_acc[accion]);
-
-				sprintf(linea, "Rango: %2u-%2u C  ", punto_medio - 5, punto_medio + 4);
-				twi_lcd_cmd(0xC0);
-				twi_lcd_msg(linea);
-
-				sprintf(msg, "Temp: %u C | Accion: ", temp);
-				uart_print(msg);
-				uart_print(uart_acc[accion]);
-				uart_print("\r\n");
+				if (menu_estado == MENU_INACTIVO)
+				{
+					sprintf(msg, "Temp: %u C | Accion: ", temp);
+					uart_print(msg);
+					uart_print(uart_acc[accion]);
+					uart_print("\r\n");
+				}
 			}
 			else
 			{
@@ -289,15 +443,19 @@ int main(void)
 				twi_lcd_cmd(0x80);
 				twi_lcd_msg(linea);
 
-				sprintf(msg, "Error DHT: %u\r\n", estado);
-				uart_print(msg);
+				if (menu_estado == MENU_INACTIVO)
+				{
+					sprintf(msg, "Error DHT: %u\r\n", estado);
+					uart_print(msg);
+				}
 			}
 		}
 
-		// --- Atención de comandos recibidos por UART ---
+		// --- Atención del menú por UART ---
 		if (rx_linea_lista)
 		{
-			uart_print("Comando no reconocido\r\n");
+			if (procesar_linea((const char *)rx_buffer, temp, accion, valido) && valido)
+			accion = aplicar_control(temp);     // Recalibra al instante con la última temperatura
 			rx_linea_lista = 0;
 		}
 	}
