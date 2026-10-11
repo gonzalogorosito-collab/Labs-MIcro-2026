@@ -6,13 +6,15 @@
 // --- SELECCIÓN DE ENTORNO (Comentado para usar en FÍSICO) ---
 // // #define MODO_SIMULACION
 
+// --- Librerías de la LCD
 #define PCF8574 0x27
-#include "twi_lcd.h"
+#include "twi_lcd.h"   // twi_lcd.h ya incluye twi.h y twi.c
 
-#define NUM_PIXELS 64
+#define NUM_PIXELS 64 // Matriz LED completa (8x8)
 
+// --- Control Servomotor por Timer 1 (Pin PB1 / OC1A) ---
 void Servo_Init(void) {
-	DDRB |= (1 << PB1);
+	DDRB |= (1 << PB1); // Configurar PB1 como salida PWM
 	TCCR1A = (1 << COM1A1) | (1 << WGM11);
 	TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);
 	ICR1 = 39999;
@@ -28,7 +30,7 @@ void send_ws2812_all(uint8_t r, uint8_t g, uint8_t b) {
 		// #ifdef MODO_SIMULACION
 		// uint8_t data[3] = {g, r, b}; // Orden GRB para la simulación
 		// #else
-		uint8_t data[3] = {b, r, g}; // Orden B, R, G exacto para tu tira
+		uint8_t data[3] = {b, r, g}; // Orden B, R, G exacto para la tira
 		// #endif
 		
 		uint8_t *ptr = data;
@@ -39,15 +41,29 @@ void send_ws2812_all(uint8_t r, uint8_t g, uint8_t b) {
 		"ld r24, %a[p]+\n\t"
 		"ldi r25, 8\n\t"
 		"L_bit:\n\t"
-		"sbi %[port], %[pin]\n\t"
-		"lsl r24\n\t"
-		"brcc L_zero\n\t"
-		"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
-		"cbi %[port], %[pin]\n\t"
+		"sbi %[port], %[pin]\n\t"     // 2 ciclos - Pin en Alto
+		"lsl r24\n\t"                 // 1 ciclo - Desplaza bit al Carry
+		"brcc L_zero\n\t"             // Salta si es 0, continúa si es 1
+		
+		// --- Envío de un 1 (Pulso alto largo) ---
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"cbi %[port], %[pin]\n\t"     // Pone el pin en Bajo
 		"rjmp L_next\n\t"
+		
 		"L_zero:\n\t"
-		"cbi %[port], %[pin]\n\t"
-		"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
+		// --- Envío de un 0 (Pulso alto corto) ---
+		"cbi %[port], %[pin]\n\t"     // Pone el pin en Bajo rápidamente
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		"nop\n\t"
+		
 		"L_next:\n\t"
 		"subi r25, 1\n\t"
 		"brne L_bit\n\t"
@@ -60,12 +76,13 @@ void send_ws2812_all(uint8_t r, uint8_t g, uint8_t b) {
 	}
 }
 
+// --- LCD con las librerías twi.h / twi_lcd.h ---
 void LCD_Init(void) {
 	twi_init();
 	DDRC  &= ~(1 << PC0);
 	PORTC &= ~(1 << PC0);
 	twi_lcd_init();
-	twi_lcd_cmd(0x0C);
+	twi_lcd_cmd(0x0C);        // Forzar Display ON, Cursor OFF y Blink OFF
 }
 
 void LCD_Print(const char *str) {
@@ -77,6 +94,7 @@ void LCD_SetCursor(uint8_t row, uint8_t col) {
 	twi_lcd_cmd(addr);
 }
 
+// --- USART para Terminal Virtual ---
 void UART_Init(unsigned int ubrr) {
 	UBRR0H = (unsigned char)(ubrr >> 8);
 	UBRR0L = (unsigned char)ubrr;
@@ -95,6 +113,7 @@ void UART_Print(const char *s) {
 	}
 }
 
+// --- ADC para la LDR ---
 void ADC_Init(void) {
 	ADMUX = (1 << REFS0);
 	ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
@@ -107,6 +126,7 @@ uint16_t ADC_Read(uint8_t channel) {
 	return ADC;
 }
 
+// Promedia 10 lecturas para eliminar el ruido y las fluctuaciones de la LDR
 uint16_t ADC_Read_Smooth(uint8_t channel) {
 	uint32_t sum = 0;
 	uint8_t samples = 10;
@@ -124,9 +144,24 @@ long map_value(long x, long in_min, long in_max, long out_min, long out_max) {
 
 int main(void) {
 	DDRD |= (1 << PD6);
+
 	UART_Init(103);
 	LCD_Init();
 	ADC_Init();
 	Servo_Init();
-	while (1) {}
+
+	LCD_SetCursor(0, 0);
+	LCD_Print("Sistema Multicolor");
+	_delay_ms(1000);
+
+	while (1) {
+		// Usamos la lectura suavizada en lugar de ADC_Read directo
+		uint16_t raw_val = ADC_Read_Smooth(0);
+		uint16_t ldr_val = map_value(raw_val, 0, 1023, 0, 100);
+
+		char buffer[64];
+		sprintf(buffer, "ADC Raw: %u, LDR Val: %u\r\n", raw_val, ldr_val);
+		UART_Print(buffer);
+		_delay_ms(500);
+	}
 }
