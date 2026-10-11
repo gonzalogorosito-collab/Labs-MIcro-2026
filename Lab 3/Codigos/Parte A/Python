@@ -1,1 +1,127 @@
+import csv
+import threading
+import time
 
+import matplotlib.pyplot as plt
+import serial
+
+# ===================== CONFIGURACIÓN =====================
+PUERTO = "COM3"                         # Ver en el Administrador de dispositivos
+BAUD = 9600
+ARCHIVO_CSV = "registro_temperatura.csv"
+ARCHIVO_PNG = "grafica_temperatura.png"
+
+# ======================== DATOS ==========================
+tiempos, temps, pms, calefs, vels = [], [], [], [], []
+detener = threading.Event()
+
+
+def lector(puerto, archivo, t0):
+    """Lee el puerto: guarda las líneas de datos y muestra el resto."""
+    escritor = csv.writer(archivo)
+
+    while not detener.is_set():
+        try:
+            linea = puerto.readline().decode("ascii", errors="ignore").strip()
+        except serial.SerialException:
+            break
+
+        if not linea:
+            continue
+
+        if linea.startswith("D,"):
+            campos = linea.split(",")
+            if len(campos) != 5:
+                continue
+            try:
+                temp, pm, calef, vel = (int(c) for c in campos[1:])
+            except ValueError:
+                continue
+
+            t = time.time() - t0
+            tiempos.append(t)
+            temps.append(temp)
+            pms.append(pm)
+            calefs.append(calef)
+            vels.append(vel)
+
+            escritor.writerow([f"{t:.1f}", temp, pm, pm - 5, pm + 4, calef, vel])
+            archivo.flush()
+        else:
+            print(linea)
+
+
+def graficar():
+    """Temperatura con banda de confort, velocidad del ventilador y calefactor."""
+    if not tiempos:
+        print("No se recibieron datos para graficar.")
+        return
+
+    conf_min = [pm - 5 for pm in pms]
+    conf_max = [pm + 4 for pm in pms]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3, 1, sharex=True, figsize=(10, 8),
+        gridspec_kw={"height_ratios": [3, 1.5, 1]})
+
+    ax1.fill_between(tiempos, conf_min, conf_max, step="post",
+                     color="tab:green", alpha=0.25, label="Rango de confort")
+    ax1.plot(tiempos, temps, color="tab:red", marker="o", markersize=3,
+             label="Temperatura")
+    ax1.set_ylabel("Temperatura (°C)")
+    ax1.legend(loc="upper right")
+    ax1.grid(True, alpha=0.3)
+
+    ax2.step(tiempos, vels, where="post", color="tab:blue")
+    ax2.set_yticks([0, 1, 2, 3])
+    ax2.set_yticklabels(["Apagado", "Baja", "Media", "Alta"])
+    ax2.set_ylim(-0.3, 3.3)
+    ax2.set_ylabel("Ventilador")
+    ax2.grid(True, alpha=0.3)
+
+    ax3.step(tiempos, calefs, where="post", color="tab:orange")
+    ax3.set_yticks([0, 1])
+    ax3.set_yticklabels(["Apagado", "Encendido"])
+    ax3.set_ylim(-0.3, 1.3)
+    ax3.set_ylabel("Calefactor")
+    ax3.set_xlabel("Tiempo (s)")
+    ax3.grid(True, alpha=0.3)
+
+    fig.suptitle("Problema A - Control de temperatura")
+    fig.tight_layout()
+    fig.savefig(ARCHIVO_PNG, dpi=150)
+    plt.show()
+
+
+def main():
+    with serial.Serial(PUERTO, BAUD, timeout=1) as puerto, \
+         open(ARCHIVO_CSV, "w", newline="") as archivo:
+
+        csv.writer(archivo).writerow(
+            ["tiempo_s", "temp_C", "punto_medio", "confort_min",
+             "confort_max", "calefactor", "velocidad"])
+
+        time.sleep(2)                   # El Arduino se reinicia al abrir el puerto
+
+        hilo = threading.Thread(target=lector,
+                                args=(puerto, archivo, time.time()),
+                                daemon=True)
+        hilo.start()
+
+        print("Registrando. Escriba comandos del menu (M, 1, 2, 0...) "
+              "o q para terminar y graficar.\n")
+
+        while True:
+            cmd = input()
+            if cmd.strip().lower() == "q":
+                break
+            puerto.write((cmd + "\r\n").encode("ascii"))
+
+        detener.set()
+        hilo.join()
+
+    graficar()
+
+
+if __name__ == "__main__":
+    main()
