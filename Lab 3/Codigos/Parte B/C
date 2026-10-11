@@ -19,14 +19,16 @@
 #define PERIODO_TELEM  20     // 20 ticks x 10 ms = 200 ms
 #define CANAL_LDR      0
 #define CANAL_POT      1
-#define POT_MIN        50     // Limite de carrera: persiana cerrada
-#define POT_MAX        973    // Limite de carrera: persiana abierta
+#define POT_MIN        150    // Limite de seguridad: ~40 grados antes del tope inferior del potenciometro
+#define POT_MAX        873    // Limite de seguridad: ~40 grados antes del tope superior del potenciometro
 #define DIR_STOP       0
-#define DIR_HOR        1      // Horario: abre la persiana, POT sube
-#define DIR_ANTI       2      // Antihorario: cierra la persiana, POT baja
-#define BANDA_MUERTA   2      // +-2% de error: motor detenido
+#define DIR_HOR        1      // Horario: POT sube
+#define DIR_ANTI       2      // Antihorario: POT baja
+#define BANDA_MUERTA   0      // +-2% de error: motor detenido
 #define PWM_MIN        80     // PWM minimo para vencer la zona muerta del motor
 #define KP             8      // Ganancia proporcional: PWM por cada 1% de error
+#define PWM_MAX        150    // PWM maximo: limita la velocidad para no pasar los limites
+
 
 //==================== VARIABLES GLOBALES ====================
 volatile char    rx_buf[RX_BUF_LEN];
@@ -36,7 +38,7 @@ volatile uint8_t tick = 0;            // 1 = paso un tick de 10 ms
 uint8_t pwm_actual = 0;               // PWM aplicado al motor (0-255)
 uint8_t dir_actual = DIR_STOP;        // Sentido de giro aplicado
 
-uint8_t setpoint = 50;                // Setpoint de iluminacion en %
+uint8_t setpoint = 43;                // Setpoint de iluminacion en %
 
 //==================== UART ====================
 void uart_init(void) {
@@ -127,13 +129,14 @@ void motor_aplicar(uint8_t dir, uint8_t pwm, uint16_t pot) {
 		PORTD &= ~(1 << PD7);
 		PORTB |=  (1 << PB0);
 		break;
-		default:                              // IN1=0, IN2=0: detenido aunque OC0A deje un pulso minimo con OCR0A=0
+		default:                              // IN1=0, IN2=0
 		PORTD &= ~(1 << PD7);
 		PORTB &= ~(1 << PB0);
 		break;
 	}
 
-	OCR0A = pwm;
+	// Detenido: ENA=1 con IN1=IN2=0 -> freno activo del L298 (bornes del motor en cortocircuito)
+	OCR0A = (dir == DIR_STOP) ? 255 : pwm;
 	dir_actual = dir;
 	pwm_actual = pwm;
 }
@@ -199,7 +202,7 @@ int main(void) {
 				motor_aplicar(DIR_STOP, 0, pot);
 				} else {
 				uint16_t pwm = PWM_MIN + err_abs * KP;
-				if (pwm > 255) pwm = 255;                               // Saturacion
+				if (pwm > PWM_MAX) pwm = PWM_MAX;                       // Saturacion
 				motor_aplicar((error > 0) ? DIR_HOR : DIR_ANTI, (uint8_t)pwm, pot);
 			}
 
