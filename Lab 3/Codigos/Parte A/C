@@ -1,5 +1,5 @@
 #define F_CPU    16000000UL
-#define PCF8574  0x20           // Proteus: 0x20 | Módulo físico: 0x27 o 0x3F
+#define PCF8574  0x20           // Proteus: 0x20 | Módulo físico: 0x27
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -15,6 +15,7 @@
 // Pin 4 (PD4)  -> IN2 del L298N
 // Pin 6 (PD6)  -> ENA del L298N (PWM, OC0A)
 // Pin 7 (PD7)  -> IN1 del L298N
+// Pin 8 (PB0)  -> LED del calefactor (con resistencia de 220 ohm a GND)
 // A4 (PC4)     -> SDA del módulo LCD I2C
 // A5 (PC5)     -> SCL del módulo LCD I2C
 //==========================================================
@@ -33,6 +34,7 @@
 #define MOTOR_ENA    PD6
 #define MOTOR_IN1    PD7
 #define MOTOR_IN2    PD4
+#define CALEF_PIN    PB0
 
 #define DUTY_BAJA    102        // 40 %
 #define DUTY_MEDIA   178        // 70 %
@@ -149,7 +151,7 @@ void motor_set(uint8_t vel)
 const uint8_t vel_acc[5]   = {0, 0, 1, 2, 3};
 const char   *lcd_acc[5]   = {"CALEF", "OK   ", "BAJA ", "MEDIA", "ALTA "};
 const char   *uart_acc[5]  = {"Calefactor ON", "Confort", "Ventilador baja",
-                              "Ventilador media", "Ventilador alta"};
+"Ventilador media", "Ventilador alta"};
 
 // --- Tramo según la distancia de la temperatura al punto medio ---
 uint8_t decidir_accion(uint8_t temp, uint8_t pm)
@@ -219,7 +221,7 @@ uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
 
 	// --- Verificación del checksum ---
 	if ((uint8_t)(datos[0] + datos[1] + datos[2] + datos[3]) != datos[4])
-	  return DHT_ERR_CHECK;
+	return DHT_ERR_CHECK;
 
 	*hum  = datos[0];
 	*temp = datos[2];
@@ -237,6 +239,9 @@ int main(void)
 	DDRD  &= ~(1 << DHT_PIN);
 	PORTD |=  (1 << DHT_PIN);
 
+	DDRB  |=  (1 << CALEF_PIN);
+	PORTB &= ~(1 << CALEF_PIN);             // Calefactor apagado al iniciar
+	
 	uart_init();
 	timer1_init();
 	motor_init();
@@ -260,6 +265,9 @@ int main(void)
 			{
 				accion = decidir_accion(temp, punto_medio);
 				motor_set(vel_acc[accion]);
+				
+				if (accion == ACC_CALEF) PORTB |=  (1 << CALEF_PIN);
+				else                     PORTB &= ~(1 << CALEF_PIN);
 
 				sprintf(linea, "Temp: %2u C ", temp);
 				twi_lcd_cmd(0x80);
