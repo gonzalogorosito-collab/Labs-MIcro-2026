@@ -24,6 +24,9 @@
 #define DIR_STOP       0
 #define DIR_HOR        1      // Horario: abre la persiana, POT sube
 #define DIR_ANTI       2      // Antihorario: cierra la persiana, POT baja
+#define BANDA_MUERTA   2      // +-2% de error: motor detenido
+#define PWM_MIN        80     // PWM minimo para vencer la zona muerta del motor
+#define KP             8      // Ganancia proporcional: PWM por cada 1% de error
 
 //==================== VARIABLES GLOBALES ====================
 volatile char    rx_buf[RX_BUF_LEN];
@@ -188,13 +191,16 @@ int main(void) {
 			pot     = adc_leer(CANAL_POT);
 			ldr_pct = (uint8_t)(((uint32_t)ldr_raw * 100 + 511) / 1023);  // 0-1023 -> 0-100 redondeado
 
-			// PRUEBA EN LAZO ABIERTO (se reemplaza en la Parte 4): 50% = detenido
-			if (setpoint > 50) {
-				motor_aplicar(DIR_HOR, (uint8_t)((setpoint - 50) * 255 / 50), pot);
-				} else if (setpoint < 50) {
-				motor_aplicar(DIR_ANTI, (uint8_t)((50 - setpoint) * 255 / 50), pot);
-				} else {
+			// --- Lazo de control proporcional con banda muerta ---
+			int16_t  error   = (int16_t)setpoint - (int16_t)ldr_pct;   // >0: falta luz, <0: sobra luz
+			uint16_t err_abs = (error < 0) ? -error : error;
+
+			if (err_abs <= BANDA_MUERTA) {
 				motor_aplicar(DIR_STOP, 0, pot);
+				} else {
+				uint16_t pwm = PWM_MIN + err_abs * KP;
+				if (pwm > 255) pwm = 255;                               // Saturacion
+				motor_aplicar((error > 0) ? DIR_HOR : DIR_ANTI, (uint8_t)pwm, pot);
 			}
 
 			// --- Telemetria cada 200 ms ---
