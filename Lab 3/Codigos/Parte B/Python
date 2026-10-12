@@ -1,1 +1,150 @@
 
+"""
+Problema B - Monitoreo de la telemetria del control de iluminacion.
+Lee lineas "SP=50,LDR=48,POT=512,PWM=120,DIR=H" por puerto serie,
+las grafica en tiempo real, las guarda en CSV y permite enviar setpoints.
+"""
+
+import csv
+import threading
+import time
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+import serial
+from matplotlib.animation import FuncAnimation
+
+# ==================== CONFIGURACION ====================
+PUERTO = "COM3"          # Ver en el Administrador de dispositivos
+BAUDIOS = 9600
+POT_MIN = 50             # Mismos limites de carrera que el firmware
+POT_MAX = 973
+INTERVALO_MS = 200       # Refresco del grafico
+
+
+# ==================== PARSEO ====================
+def parsear(linea):
+    """Devuelve un dict con la telemetria, o None si la linea no es de telemetria."""
+    if not linea.startswith("SP="):
+        return None
+    try:
+        campos = dict(par.split("=") for par in linea.split(","))
+        return {
+            "sp": int(campos["SP"]),
+            "ldr": int(campos["LDR"]),
+            "pot": int(campos["POT"]),
+            "pwm": int(campos["PWM"]),
+            "dir": campos["DIR"],
+        }
+    except (ValueError, KeyError):
+        return None      # Linea incompleta o corrupta
+
+
+# ==================== ENVIO DE SETPOINTS ====================
+def enviar_setpoints(ser):
+    """Hilo que lee la consola y envia cada linea al micro."""
+    while True:
+        try:
+            texto = input()
+        except EOFError:
+            break
+        ser.write((texto.strip() + "\r").encode())
+
+
+# ==================== PROGRAMA PRINCIPAL ====================
+def main():
+    ser = serial.Serial(PUERTO, BAUDIOS, timeout=0)
+    time.sleep(2)                    # El Arduino se reinicia al abrir el puerto
+    ser.reset_input_buffer()
+
+    marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archivo_csv = open(f"telemetria_{marca}.csv", "w", newline="")
+    escritor = csv.writer(archivo_csv)
+    escritor.writerow(["t_s", "setpoint", "ldr", "pot", "pwm", "dir"])
+
+    t, sp, ldr, pot, pwm = [], [], [], [], []
+    buffer = ""
+    t0 = None
+
+    # --- Figura: 3 paneles con eje de tiempo compartido ---
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
+    fig.suptitle("Control de iluminacion con persiana motorizada")
+
+    l_sp, = ax1.plot([], [], "--", color="tab:blue", label="Setpoint")
+    l_ldr, = ax1.plot([], [], color="tab:orange", label="LDR")
+    ax1.set_ylabel("Iluminacion [%]")
+    ax1.set_ylim(0, 100)
+    ax1.legend(loc="upper right")
+    ax1.grid(True)
+
+    l_pot, = ax2.plot([], [], color="tab:green", label="Posicion")
+    ax2.axhline(POT_MIN, ls=":", color="gray", label="Limites de carrera")
+    ax2.axhline(POT_MAX, ls=":", color="gray")
+    ax2.set_ylabel("Potenciometro [ADC]")
+    ax2.set_ylim(0, 1023)
+    ax2.legend(loc="upper right")
+    ax2.grid(True)
+
+    l_pwm, = ax3.plot([], [], color="tab:red", drawstyle="steps-post")
+    ax3.axhline(0, color="black", lw=0.8)
+    ax3.set_ylabel("PWM (+H / -A)")
+    ax3.set_ylim(-270, 270)
+    ax3.set_xlabel("Tiempo [s]")
+    ax3.grid(True)
+
+    # --- Actualizacion periodica: lee el puerto y redibuja ---
+    def actualizar(_):
+        nonlocal buffer, t0
+        if ser.in_waiting:
+            buffer += ser.read(ser.in_waiting).decode(errors="ignore")
+        *lineas, buffer = buffer.split("\n")          # La ultima puede estar incompleta
+
+        for linea in lineas:
+            linea = linea.strip()
+            datos = parsear(linea)
+            if datos is None:
+                if linea:
+                    print(f"[micro] {linea}")         # Confirmaciones y errores
+                continue
+
+            ahora = time.time()
+            if t0 is None:
+                t0 = ahora
+            ts = ahora - t0
+            pwm_signo = {"H": 1, "A": -1}.get(datos["dir"], 0) * datos["pwm"]
+
+            t.append(ts)
+            sp.append(datos["sp"])
+            ldr.append(datos["ldr"])
+            pot.append(datos["pot"])
+            pwm.append(pwm_signo)
+            escritor.writerow([f"{ts:.2f}", datos["sp"], datos["ldr"],
+                               datos["pot"], datos["pwm"], datos["dir"]])
+
+        if t:
+            l_sp.set_data(t, sp)
+            l_ldr.set_data(t, ldr)
+            l_pot.set_data(t, pot)
+            l_pwm.set_data(t, pwm)
+            ax3.set_xlim(0, max(t[-1], 10))
+            archivo_csv.flush()
+
+    # --- Al cerrar la ventana: guardar grafico ---
+    fig.canvas.mpl_connect("close_event",
+                           lambda _: fig.savefig(f"grafico_{marca}.png", dpi=150))
+
+    threading.Thread(target=enviar_setpoints, args=(ser,), daemon=True).start()
+    print(f"Conectado a {PUERTO}. Escriba un setpoint (0-100) y Enter para enviarlo.")
+
+    anim = FuncAnimation(fig, actualizar, interval=INTERVALO_MS, cache_frame_data=False)
+    try:
+        plt.tight_layout()
+        plt.show()
+    finally:
+        ser.close()
+        archivo_csv.close()
+        print(f"Datos guardados en telemetria_{marca}.csv y grafico_{marca}.png")
+
+
+if __name__ == "__main__":
+    main()
