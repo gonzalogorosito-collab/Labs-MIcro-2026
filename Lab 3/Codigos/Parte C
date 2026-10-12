@@ -207,6 +207,8 @@ int main(void) {
 			r_led = 0;   g_led = 0;   b_led = 0;
 		}
 
+		Servo_SetAngle_OCR(servo_pwm);
+		send_ws2812_all(r_led, g_led, b_led);
 		_delay_ms(500);
 	}
 }
