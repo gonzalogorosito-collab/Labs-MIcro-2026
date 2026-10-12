@@ -30,7 +30,7 @@ void send_ws2812_all(uint8_t r, uint8_t g, uint8_t b) {
 		// #ifdef MODO_SIMULACION
 		// uint8_t data[3] = {g, r, b}; // Orden GRB para la simulación
 		// #else
-		uint8_t data[3] = {b, r, g}; // Orden B, R, G exacto para la tira
+		uint8_t data[3] = {b, r, g}; // Orden B, R, G exacto para tu tira
 		// #endif
 		
 		uint8_t *ptr = data;
@@ -162,6 +162,51 @@ int main(void) {
 		char buffer[64];
 		sprintf(buffer, "ADC Raw: %u, LDR Val: %u\r\n", raw_val, ldr_val);
 		UART_Print(buffer);
+
+		const char *colorName = "APAGADO";
+		uint16_t min_range = 0;
+		uint16_t max_range = 0;
+		uint16_t servo_pwm = 1500;
+		uint8_t r_led = 0, g_led = 0, b_led = 0;
+
+		// Rangos ordenados estrictamente de menor a mayor ADC Raw
+		if (raw_val >= 145 && raw_val <= 168) {
+			colorName = "AMARILLO";
+			min_range = 145; max_range = 168;
+			servo_pwm = 2375; // ~45°
+			r_led = 120; g_led = 120; b_led = 0;
+		}
+		else if (raw_val >= 210 && raw_val <= 250) {
+			colorName = "VERDE";
+			min_range = 210; max_range = 250;
+			servo_pwm = 3125; // ~90°
+			r_led = 0;   g_led = 255; b_led = 0;
+		}
+		else if (raw_val >= 300 && raw_val <= 340) {
+			colorName = "AZUL";
+			min_range = 300; max_range = 340;
+			servo_pwm = 2750; // ~75°
+			r_led = 0;   g_led = 0;   b_led = 255;
+		}
+		else if (raw_val >= 370 && raw_val <= 435) {
+			colorName = "ROJO";
+			min_range = 370; max_range = 435;
+			servo_pwm = 2000; // ~30°
+			r_led = 255; g_led = 0;   b_led = 0;
+		}
+		else if (raw_val >= 680 && raw_val <= 900) {
+			colorName = "APAGADO";
+			min_range = 680; max_range = 900;
+			servo_pwm = 1500; // Reposo (0°)
+			r_led = 0;   g_led = 0;   b_led = 0;
+		}
+		else {
+			colorName = "APAGADO";
+			min_range = 0;   max_range = 0;
+			servo_pwm = 1500;
+			r_led = 0;   g_led = 0;   b_led = 0;
+		}
+
 		_delay_ms(500);
 	}
 }
