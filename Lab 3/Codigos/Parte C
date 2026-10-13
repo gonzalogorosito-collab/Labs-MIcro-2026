@@ -209,6 +209,20 @@ int main(void) {
 
 		Servo_SetAngle_OCR(servo_pwm);
 		send_ws2812_all(r_led, g_led, b_led);
+
+		char line1[17];
+		char line2[17];
+		
+		// Forzamos a que ambas líneas tengan formato fijo para limpiar residuos
+		sprintf(line1, "Color: %-8s ", colorName);
+		sprintf(line2, "Rango: %3u-%3u  ", min_range, max_range);
+
+		LCD_SetCursor(0, 0);
+		LCD_Print(line1);
+
+		LCD_SetCursor(1, 0);
+		LCD_Print(line2);
+
 		_delay_ms(500);
 	}
 }
