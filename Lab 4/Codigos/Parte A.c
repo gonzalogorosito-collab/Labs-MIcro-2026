@@ -223,22 +223,175 @@ void u32_a_texto(uint32_t v, char *s)
 	*s = '\0';
 }
 
-void mostrar_cuenta(uint8_t i)
+//==================== MÁQUINA DE ESTADOS ====================
+typedef enum { E_ESPERA, E_PIN, E_MENU, E_SALDO, E_MONTO, E_MENSAJE } estado_t;
+
+#define TICK_MS         10
+#define T_MENSAJE       (2000 / TICK_MS)            // 2 s
+#define T_INACTIVIDAD   (30000 / TICK_MS)           // 30 s
+#define MAX_INTENTOS    3
+#define MAX_DIG_MONTO   5
+
+#define IND_NINGUNO     0x00
+#define IND_VERDE       0x01
+#define IND_ROJO        0x02
+#define IND_BUZZER      0x04
+
+estado_t estado, estado_sig;
+uint8_t  cuenta = SIN_CUENTA;
+cuenta_t c;
+char     entrada[6];
+uint8_t  n_entrada;
+uint8_t  intentos;
+char     operacion;                                 // 'B' = retiro, 'C' = depósito
+uint16_t t_mensaje, t_inactivo;
+
+void indicadores_off(void)
 {
-	cuenta_t c;
+	led_verde(0);
+	led_rojo(0);
+	buzzer(0);
+}
+
+void pantalla(void)
+{
+	char txt[17], num[11];
+	uint8_t i;
+
+	switch (estado) {
+		case E_ESPERA:
+		lcd_linea(0, "Bienvenido");
+		lcd_linea(1, "Acerque tarjeta");
+		break;
+		case E_PIN:
+		lcd_linea(0, "Ingrese PIN:");
+		for (i = 0; i < n_entrada; i++) txt[i] = '*';
+		txt[i] = '\0';
+		lcd_linea(1, txt);
+		break;
+		case E_MENU:
+		lcd_linea(0, "A:Saldo B:Retiro");
+		lcd_linea(1, "C:Depos. D:Salir");
+		break;
+		case E_SALDO:
+		u32_a_texto(c.saldo, num);
+		strcpy(txt, "Saldo: $");
+		strcat(txt, num);
+		lcd_linea(0, txt);
+		lcd_linea(1, "#:Volver");
+		break;
+		case E_MONTO:
+		lcd_linea(0, operacion == 'B' ? "Monto retiro:" : "Monto deposito:");
+		txt[0] = '$';
+		memcpy(txt + 1, entrada, n_entrada);
+		txt[n_entrada + 1] = '\0';
+		lcd_linea(1, txt);
+		break;
+		default:
+		break;
+	}
+}
+
+void ir_a(estado_t e)
+{
+	estado = e;
+	n_entrada = 0;
+	t_inactivo = 0;
+	pantalla();
+}
+
+void mensaje(const char *l1, const char *l2, uint8_t ind, estado_t sig)
+{
+	lcd_linea(0, l1);
+	lcd_linea(1, l2);
+	if (ind & IND_VERDE)  led_verde(1);
+	if (ind & IND_ROJO)   led_rojo(1);
+	if (ind & IND_BUZZER) buzzer(1);
+	estado_sig = sig;
+	t_mensaje = T_MENSAJE;
+	estado = E_MENSAJE;
+}
+
+uint32_t texto_a_u32(const char *s, uint8_t n)
+{
+	uint32_t v = 0;
+	uint8_t i;
+	for (i = 0; i < n; i++) v = v * 10 + (s[i] - '0');
+	return v;
+}
+
+void procesar_tarjeta(const uint8_t *uid)
+{
+	cuenta = cuenta_buscar(uid);
+	if (cuenta == SIN_CUENTA) {
+		mensaje("Tarjeta no", "registrada", IND_ROJO, E_ESPERA);
+		return;
+	}
+	cuenta_leer(cuenta, &c);
+	if (c.bloqueada) {
+		mensaje("Tarjeta", "bloqueada", IND_ROJO, E_ESPERA);
+		return;
+	}
+	intentos = 0;
+	ir_a(E_PIN);
+}
+
+void verificar_pin(void)
+{
+	char txt[17];
+
+	// --- (1) PIN correcto ---
+	if (memcmp(entrada, c.pin, 4) == 0) {
+		intentos = 0;
+		mensaje("PIN correcto", "", IND_VERDE, E_MENU);
+		return;
+	}
+
+	// --- (2) Tercer intento fallido: bloqueo persistente ---
+	if (++intentos >= MAX_INTENTOS) {
+		c.bloqueada = 1;
+		cuenta_guardar(cuenta, &c);
+		mensaje("Tarjeta", "bloqueada", IND_ROJO | IND_BUZZER, E_ESPERA);
+		return;
+	}
+
+	// --- (3) Intento fallido: volver a pedir PIN ---
+	strcpy(txt, "Intento ");
+	txt[8]  = '0' + intentos;
+	txt[9]  = '/';
+	txt[10] = '0' + MAX_INTENTOS;
+	txt[11] = '\0';
+	mensaje("PIN incorrecto", txt, IND_ROJO, E_PIN);
+}
+
+void ejecutar_operacion(void)
+{
+	uint32_t monto = texto_a_u32(entrada, n_entrada);
 	char txt[17], num[11];
 
-	cuenta_leer(i, &c);
-	strcpy(txt, "Cuenta ");
-	txt[7] = '1' + i;
-	txt[8] = '\0';
-	if (c.bloqueada) strcat(txt, " BLOQ");
-	lcd_linea(0, txt);
+	// --- (1) Validar monto ---
+	if (monto % 10) {
+		mensaje("Monto invalido", "Multiplo de 10", IND_ROJO, E_MENU);
+		return;
+	}
 
+	// --- (2) Retiro o depósito ---
+	if (operacion == 'B') {
+		if (monto > c.saldo) {
+			mensaje("Saldo", "insuficiente", IND_ROJO, E_MENU);
+			return;
+		}
+		c.saldo -= monto;
+		} else {
+		c.saldo += monto;
+	}
+
+	// --- (3) Guardar en EEPROM y confirmar ---
+	cuenta_guardar(cuenta, &c);
 	u32_a_texto(c.saldo, num);
 	strcpy(txt, "Saldo: $");
 	strcat(txt, num);
-	lcd_linea(1, txt);
+	mensaje("Operacion OK", txt, IND_VERDE, E_MENU);
 }
 
 //==================== PROGRAMA PRINCIPAL ====================
@@ -246,9 +399,7 @@ int main(void)
 {
 	uint8_t uid[4], ultimo[4];
 	uint8_t presente = 0, fallos = 0, ciclos = 0;
-	uint8_t cuenta = SIN_CUENTA;
 	uint8_t reset_fabrica;
-	cuenta_t c;
 	char tecla;
 
 	// ---Inicialización (twi_init primero: pisa DDRC/PORTC) ---
@@ -268,14 +419,6 @@ int main(void)
 	// ---EEPROM: D presionada al encender = reset de fábrica ---
 	reset_fabrica = (teclado_escanear() == 'D');
 	eeprom_init(reset_fabrica);
-	
-		for (uint8_t k = 0; k < N_CUENTAS; k++) {
-			cuenta_leer(k, &c);
-			uart_print("EE cuenta ");
-			uart_send('1' + k);
-			uart_print(": ");
-			uart_print_hex_array(c.uid, 4);
-		}
 
 	twi_lcd_init();
 	_delay_ms(2);                                   // esperar fin del clear (1,52 ms)
@@ -286,56 +429,93 @@ int main(void)
 		lcd_linea(1, "Cuentas cargadas");
 		_delay_ms(1500);
 	}
-	lcd_linea(0, "Acerque tarjeta");
-	lcd_linea(1, "");
+	ir_a(E_ESPERA);
 	uart_print("Cajero listo\r\n");
 
 	while (1) {
-		// ---Teclado: +100 / -100 sobre la cuenta activa ---
 		tecla = teclado_leer();
-		if (tecla && cuenta != SIN_CUENTA) {
-			cuenta_leer(cuenta, &c);
-			if (tecla == '#') {
-				c.saldo += 100;
-				cuenta_guardar(cuenta, &c);
-				led_verde(1); _delay_ms(300); led_verde(0);
-				mostrar_cuenta(cuenta);
-				} else if (tecla == '*') {
-				if (c.saldo >= 100) {
-					c.saldo -= 100;
-					cuenta_guardar(cuenta, &c);
-					led_verde(1); _delay_ms(300); led_verde(0);
-					mostrar_cuenta(cuenta);
-					} else {
-					led_rojo(1); _delay_ms(300); led_rojo(0);
-				}
-			}
-		}
+		if (tecla) t_inactivo = 0;
 
-		// ---Tarjeta: cada 200 ms ---
-		if (++ciclos >= 20) {
-			ciclos = 0;
-			if (leer_tarjeta(uid)) {
-				fallos = 0;
-				if (!presente || memcmp(uid, ultimo, 4) != 0) {
-					uart_print("UID leido: ");
-					uart_print_hex_array(uid, 4);
-					cuenta = cuenta_buscar(uid);
-					if (cuenta == SIN_CUENTA) {
-						lcd_linea(0, "Tarjeta no");
-						lcd_linea(1, "registrada");
-						led_rojo(1); _delay_ms(300); led_rojo(0);
-						} else {
-						mostrar_cuenta(cuenta);
+		switch (estado) {
+			// ---ESPERA: lectura de tarjeta cada 200 ms ---
+			case E_ESPERA:
+			if (++ciclos >= 20) {
+				ciclos = 0;
+				if (leer_tarjeta(uid)) {
+					fallos = 0;
+					if (!presente || memcmp(uid, ultimo, 4) != 0) {
+						memcpy(ultimo, uid, 4);
+						procesar_tarjeta(uid);
 					}
-					memcpy(ultimo, uid, 4);
+					presente = 1;
+					} else if (++fallos >= 2) {     // 2 fallos seguidos = tarjeta retirada
+					presente = 0;
 				}
-				presente = 1;
-				} else if (++fallos >= 2) {             // 2 fallos seguidos = tarjeta retirada
-				presente = 0;
 			}
+			break;
+
+			// ---PIN: 4 dígitos, * borra, # confirma, D cancela ---
+			case E_PIN:
+			if (tecla >= '0' && tecla <= '9' && n_entrada < 4) {
+				entrada[n_entrada++] = tecla;
+				pantalla();
+				} else if (tecla == '*' && n_entrada > 0) {
+				n_entrada--;
+				pantalla();
+				} else if (tecla == '#' && n_entrada == 4) {
+				verificar_pin();
+				} else if (tecla == 'D') {
+				ir_a(E_ESPERA);
+			}
+			break;
+
+			// ---MENÚ: A saldo, B retiro, C depósito, D salir ---
+			case E_MENU:
+			if (tecla == 'A') {
+				ir_a(E_SALDO);
+				} else if (tecla == 'B' || tecla == 'C') {
+				operacion = tecla;
+				ir_a(E_MONTO);
+				} else if (tecla == 'D') {
+				mensaje("Gracias", "Retire tarjeta", IND_NINGUNO, E_ESPERA);
+			}
+			break;
+
+			// ---SALDO: # o D vuelve al menú ---
+			case E_SALDO:
+			if (tecla == '#' || tecla == 'D') ir_a(E_MENU);
+			break;
+
+			// ---MONTO: hasta 5 dígitos, * borra, # confirma, D vuelve ---
+			case E_MONTO:
+			if (tecla >= '0' && tecla <= '9' && n_entrada < MAX_DIG_MONTO) {
+				entrada[n_entrada++] = tecla;
+				pantalla();
+				} else if (tecla == '*' && n_entrada > 0) {
+				n_entrada--;
+				pantalla();
+				} else if (tecla == '#' && n_entrada > 0) {
+				ejecutar_operacion();
+				} else if (tecla == 'D') {
+				ir_a(E_MENU);
+			}
+			break;
+
+			// ---MENSAJE: esperar y pasar al estado siguiente ---
+			case E_MENSAJE:
+			if (--t_mensaje == 0) {
+				indicadores_off();
+				ir_a(estado_sig);
+			}
+			break;
 		}
 
-		_delay_ms(10);
+		// ---Timeout de inactividad durante la sesión ---
+		if (estado == E_PIN || estado == E_MENU || estado == E_SALDO || estado == E_MONTO) {
+			if (++t_inactivo >= T_INACTIVIDAD)
+			mensaje("Tiempo agotado", "Sesion cerrada", IND_ROJO, E_ESPERA);
+		}
+
+		_delay_ms(TICK_MS);
 	}
 }
