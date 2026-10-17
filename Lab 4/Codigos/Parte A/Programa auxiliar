@@ -1,0 +1,109 @@
+//==================== LECTOR DE UID (programa auxiliar) ====================
+// Lee el UID de tarjetas MIFARE con el RC522 y lo envía por USART.
+// Se usó para obtener los UIDs de las tarjetas físicas y cargarlos en
+// la tabla cuentas_defecto del cajero (Problema A).
+// Usa las funciones de bajo nivel de la librería de la cátedra
+// (mfrc522_write, mfrc522_read, set/clearBitMask), sin los mensajes
+// de depuración de mfrc522_standard().
+//===========================================================================
+
+//==================== MAPEO DE PINES ====================
+// PB2 -> SDA   PB3 -> MOSI   PB4 <- MISO   PB5 -> SCK   (RC522)
+// PB1 -> RST del RC522
+// PD1 -> TX (monitor serie, 9600 baudios)
+//=========================================================
+
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "UART.c"
+#include "SPI.c"
+#include "RC522.c"
+
+//==================== INICIALIZACIÓN ====================
+void rfid_init(void)
+{
+	mfrc522_resetPinInit();
+	mfrc522_write(CommandReg, 0x0F);                // SoftReset
+	_delay_ms(50);
+	mfrc522_write(TModeReg, 0x8D);
+	mfrc522_write(TPrescalerReg, 0x3E);
+	mfrc522_write(TReloadRegL, 30);
+	mfrc522_write(TReloadRegH, 0);
+	mfrc522_write(TxASKReg, 0x40);                  // modulación ASK 100%
+	mfrc522_write(ModeReg, 0x3D);
+	mfrc522_write(RFCfgReg, 0x70);                  // ganancia máxima del receptor
+	mfrc522_setBitMask(TxControlReg, 0x03);         // antena ON
+}
+
+//==================== COMUNICACIÓN CON LA TARJETA ====================
+uint8_t rfid_transceive(const uint8_t *tx, uint8_t n, uint8_t *rx, uint8_t max, uint8_t bits)
+{
+	uint8_t i, irq, m, ok = 0;
+	uint16_t t;
+
+	// --- (1) Preparar: idle, limpiar IRQs, vaciar FIFO ---
+	mfrc522_write(CommandReg, PCD_IDLE);
+	mfrc522_write(CommIrqReg, 0x7F);
+	mfrc522_write(FIFOLevelReg, 0x80);
+
+	// --- (2) Cargar datos y lanzar Transceive ---
+	for (i = 0; i < n; i++) mfrc522_write(FIFODataReg, tx[i]);
+	mfrc522_write(BitFramingReg, bits);
+	mfrc522_write(CommandReg, PCD_TRANSCEIVE);
+	mfrc522_setBitMask(BitFramingReg, 0x80);        // StartSend
+
+	// --- (3) Esperar respuesta o timeout ---
+	for (t = 0; t < 5000; t++) {
+		irq = mfrc522_read(CommIrqReg);
+		if (irq & 0x30) { ok = 1; break; }          // RxIRq / IdleIRq
+		if (irq & 0x01) break;                      // TimerIRq (timeout)
+	}
+	mfrc522_clearBitMask(BitFramingReg, 0x80);
+	if (!ok) return 0;
+
+	// --- (4) Verificar errores y leer FIFO ---
+	if (mfrc522_read(ErrorReg) & 0x13) return 0;    // BufferOvfl, Parity, Protocol
+	m = mfrc522_read(FIFOLevelReg);
+	if (m > max) m = max;
+	for (i = 0; i < m; i++) rx[i] = mfrc522_read(FIFODataReg);
+	return m;
+}
+
+uint8_t rfid_leer_uid(uint8_t *uid)
+{
+	uint8_t req = PICC_REQIDL, atqa[2];
+	uint8_t anti[2] = { PICC_ANTICOLL, 0x20 }, r[5];
+
+	if (rfid_transceive(&req, 1, atqa, 2, 0x07) != 2) return 0;   // REQA -> ATQA
+	if (rfid_transceive(anti, 2, r, 5, 0x00) != 5) return 0;      // anticolisión -> UID + BCC
+	if ((r[0] ^ r[1] ^ r[2] ^ r[3]) != r[4]) return 0;            // verificar BCC
+	memcpy(uid, r, 4);
+	return 1;
+}
+
+//==================== PROGRAMA PRINCIPAL ====================
+int main(void)
+{
+	uint8_t uid[4], ultimo[4] = { 0 };
+
+	uart_init(103);                                 // 9600 baudios a 16 MHz
+	spi_init();
+	rfid_init();
+
+	uart_print("VersionReg: ");
+	uart_print_hex(mfrc522_read(VersionReg));
+	uart_print("\r\n");
+
+	while (1) {
+		if (rfid_leer_uid(uid) && memcmp(uid, ultimo, 4) != 0) {
+			uart_print("UID: ");
+			uart_print_hex_array(uid, 4);
+			memcpy(ultimo, uid, 4);
+		}
+		_delay_ms(100);
+	}
+}
