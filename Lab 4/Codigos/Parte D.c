@@ -107,6 +107,23 @@ static uint32_t millis(void)
     return t;
 }
 
+/* ADC para el joystick (referencia AVcc, prescaler 128 = 125 kHz)*/
+static void adc_init(void)
+{
+    ADMUX  = (1 << REFS0);
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+}
+
+static uint16_t adc_leer(uint8_t canal)
+{
+    ADMUX = (1 << REFS0) | (canal & 0x07);
+    ADCSRA |= (1 << ADSC);                  /* primera conversion: se descarta */
+    while (ADCSRA & (1 << ADSC));
+    ADCSRA |= (1 << ADSC);
+    while (ADCSRA & (1 << ADSC));
+    return ADC;
+}
+
 /* Matriz WS2812B*/
 #define WS_BIT                                  \
     "out  %[p], %[hi]\n\t"                      \
@@ -177,22 +194,93 @@ static void poner(uint8_t f, uint8_t c, color_t col)
     cambio = 1;
 }
 
+static void dibujar_cursor(void)
+{
+    limpiar();
+    poner(cf, cc, PALETA[col_cursor]);
+}
+
+/* Boton del joystick: antirrebote cada 10 ms y eventos*/
+static evbtn_t btn_evento(void)
+{
+    static uint8_t ult = 0, est = 0, largo = 0;
+    static uint32_t t_lec = 0, t_pres = 0;
+    uint32_t ahora = millis();
+
+    if (ahora - t_lec >= 10) {
+        t_lec = ahora;
+        uint8_t lec = !(PIND & (1 << PD2));         /* activo en bajo */
+        uint8_t prev = ult;
+        ult = lec;
+        if (lec == prev && lec != est) {            /* cambio estable */
+            est = lec;
+            if (est) { t_pres = ahora; largo = 0; return BTN_PRESIONADO; }
+            if (!largo) return BTN_CORTO;           /* soltado antes del tiempo largo */
+        }
+    }
+    if (est && !largo && (ahora - t_pres >= T_PULSO_LARGO)) {
+        largo = 1;
+        return BTN_LARGO;
+    }
+    return BTN_NADA;
+}
+
+/* Cursor con joystick: ejes independientes, zona muerta y limites [0..7] */
+static void mover_cursor(void)
+{
+    static uint8_t activo = 0;
+    static uint32_t t_paso = 0;
+
+    int16_t vx = (int16_t)adc_leer(CANAL_X) - 512;
+    int16_t vy = (int16_t)adc_leer(CANAL_Y) - 512;
+#if INVERTIR_X
+    vx = -vx;
+#endif
+#if INVERTIR_Y
+    vy = -vy;
+#endif
+    int16_t ax = (vx < 0) ? -vx : vx;
+    int16_t ay = (vy < 0) ? -vy : vy;
+
+    if (ax < ZONA_MUERTA && ay < ZONA_MUERTA) { activo = 0; return; }
+
+    uint32_t ahora = millis();
+    if (activo && (ahora - t_paso < PASO_CURSOR_MS)) return;
+    activo = 1;
+    t_paso = ahora;
+
+    if (ax >= ZONA_MUERTA) {                        /* cada eje se mueve por separado */
+        if (vx > 0) { if (cc < 7) cc++; } else { if (cc > 0) cc--; }
+    }
+    if (ay >= ZONA_MUERTA) {
+        if (vy > 0) { if (cf < 7) cf++; } else { if (cf > 0) cf--; }
+    }
+    dibujar_cursor();
+}
+
 /* main */
 int main(void)
 {
+    DDRD  &= ~(1 << PD2);                   /* boton del joystick con pull-up interno */
+    PORTD |= (1 << PD2);
+
     ws_init();
+    adc_init();
     timer0_init();
     sei();
 
-    limpiar();
-    for (uint8_t f = 0; f < 8; f++)         /* patron de prueba: triangulo, cada fila de un color */
-        for (uint8_t c = 0; c <= f; c++)
-            poner(f, c, PALETA[f % 6]);
-
+    dibujar_cursor();
     uint32_t t_refresco = 0;
 
     for (;;) {
+        evbtn_t ev = btn_evento();
         uint32_t ahora = millis();
+
+        mover_cursor();
+        if (ev == BTN_CORTO) {                      /* cambia el color del cursor */
+            col_cursor = (col_cursor + 1) % COLORES_CURSOR;
+            dibujar_cursor();
+        }
 
         if (cambio || (ahora - t_refresco >= REFRESCO_MS)) {    /* se envia si hubo cambios o cada REFRESCO_MS */
             ws_show();
