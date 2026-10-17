@@ -107,12 +107,97 @@ static uint32_t millis(void)
     return t;
 }
 
+/* Matriz WS2812B*/
+#define WS_BIT                                  \
+    "out  %[p], %[hi]\n\t"                      \
+    "nop\n\tnop\n\tnop\n\tnop\n\t"              \
+    "sbrs %[b], 7\n\t"                          \
+    "out  %[p], %[lo]\n\t"                      \
+    "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t" \
+    "out  %[p], %[lo]\n\t"                      \
+    "lsl  %[b]\n\t"                             \
+    "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+
+static inline void ws_byte(uint8_t b, uint8_t hi, uint8_t lo)
+{
+    asm volatile(
+        WS_BIT WS_BIT WS_BIT WS_BIT
+        WS_BIT WS_BIT WS_BIT WS_BIT
+        : [b] "+r" (b)
+        : [p] "I" (_SFR_IO_ADDR(WS_PORT)), [hi] "r" (hi), [lo] "r" (lo)
+    );
+}
+
+static void ws_init(void)
+{
+    DDRD  |= (1 << WS_PIN);
+    WS_PORT &= ~(1 << WS_PIN);
+}
+
+static void ws_show(void)
+{
+    uint8_t hi = WS_PORT | (1 << WS_PIN);
+    uint8_t lo = WS_PORT & ~(1 << WS_PIN);
+    uint8_t s = SREG;
+    cli();                                  /* la temporizacion no admite interrupciones.*/
+    for (uint8_t i = 0; i < 64; i++) {
+        ws_byte(fb[i].g, hi, lo);
+        ws_byte(fb[i].r, hi, lo);
+        ws_byte(fb[i].b, hi, lo);
+    }
+    SREG = s;
+    _delay_us(80);                          /* nivel bajo > 50 us: la matriz carga la imagen */
+}
+
+/* Posicion (fila, columna) indice del LED en la cadena */
+static uint8_t indice(uint8_t f, uint8_t c)
+{
+#if SERPENTINA
+    return (uint8_t)(f * 8 + ((f & 1) ? (7 - c) : c));
+#else
+    return (uint8_t)(f * 8 + c);
+#endif
+}
+
+static void limpiar(void)
+{
+    for (uint8_t i = 0; i < 64; i++) { fb[i].r = 0; fb[i].g = 0; fb[i].b = 0; }
+    cambio = 1;
+}
+
+static void llenar(color_t col)
+{
+    for (uint8_t i = 0; i < 64; i++) fb[i] = col;
+    cambio = 1;
+}
+
+static void poner(uint8_t f, uint8_t c, color_t col)
+{
+    fb[indice(f, c)] = col;
+    cambio = 1;
+}
+
 /* main */
 int main(void)
 {
+    ws_init();
     timer0_init();
     sei();
 
+    limpiar();
+    for (uint8_t f = 0; f < 8; f++)         /* patron de prueba: triangulo, cada fila de un color */
+        for (uint8_t c = 0; c <= f; c++)
+            poner(f, c, PALETA[f % 6]);
+
+    uint32_t t_refresco = 0;
+
     for (;;) {
+        uint32_t ahora = millis();
+
+        if (cambio || (ahora - t_refresco >= REFRESCO_MS)) {    /* se envia si hubo cambios o cada REFRESCO_MS */
+            ws_show();
+            cambio = 0;
+            t_refresco = ahora;
+        }
     }
 }
