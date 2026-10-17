@@ -9,7 +9,7 @@
 // PC0 -> LED verde   PC1 -> LED rojo   PC2 -> Buzzer activo
 //=========================================================
 
-#define SIMULACION      // comentar para hardware real con RC522
+//#define SIMULACION      // comentar para hardware real con RC522
 
 #define F_CPU 16000000UL
 #include <avr/io.h>
@@ -168,9 +168,15 @@ typedef struct {
 } cuenta_t;
 
 const cuenta_t cuentas_defecto[N_CUENTAS] = {
+	#ifdef SIMULACION
 	{ { 0xA1, 0xB2, 0xC3, 0xD4 }, { '1', '2', '3', '4' }, 1000, 0 },
 	{ { 0x11, 0x22, 0x33, 0x44 }, { '5', '6', '7', '8' }, 2500, 0 },
 	{ { 0x5A, 0x6B, 0x7C, 0x8D }, { '0', '0', '0', '0' },  500, 0 }
+	#else
+	{ { 0xC3, 0x7A, 0x44, 0x29 }, { '1', '2', '3', '4' }, 1000, 0 },
+	{ { 0xC9, 0xC2, 0x5E, 0x12 }, { '5', '6', '7', '8' }, 2500, 0 },
+	{ { 0x96, 0x15, 0xE3, 0xB8 }, { '0', '0', '0', '0' },  500, 0 }
+	#endif
 };
 
 #define EE_DIR(i)  ((void *)(EE_CUENTAS_DIR + (i) * sizeof(cuenta_t)))
