@@ -52,6 +52,10 @@ static const color_t PALETA[6] = {
 #define COLORES_JUEGO   4       /* la secuencia usa solo los 4 primeros */
 #define COLORES_CURSOR  6
 
+/* Un tono distinto para cada color del juego (Hz) */
+static const uint16_t TONOS[COLORES_JUEGO] = { 330, 392, 440, 523 };
+#define TONO_ERROR      110
+
 /*Maquina de estados  */
 typedef enum {
     ST_RECORD,      /* al encender: muestra el record */
@@ -105,6 +109,52 @@ static uint32_t millis(void)
     t = ms;
     SREG = s;
     return t;
+}
+
+/* Buzzer: Timer1 Fast PWM (modo 14), OC1A = PB1
+ ICR1 = F_CPU / (8 * f) - 1 ; ciclo de trabajo 50 % */
+static void tono(uint16_t f)
+{
+    if (f == 0) {
+        TCCR1A = 0;
+        TCCR1B = 0;
+        PORTB &= ~(1 << PB1);
+        return;
+    }
+    uint32_t top = (F_CPU / (8UL * f)) - 1;
+    DDRB |= (1 << PB1);
+    ICR1  = (uint16_t)top;
+    OCR1A = (uint16_t)(top / 2);
+    TCNT1 = 0;
+    TCCR1A = (1 << COM1A1) | (1 << WGM11);
+    TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);   /* prescaler 8 */
+}
+
+/*UART 9600 8N1 (solo transmision, para depuracion) */
+static void uart_init(void)
+{
+    UBRR0  = 103;                           /* 16 MHz / (16 * 9600) - 1 */
+    UCSR0B = (1 << TXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+static void uart_tx(char c)
+{
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = c;
+}
+
+static void uart_puts_P(const char *s)
+{
+    char c;
+    while ((c = pgm_read_byte(s++))) uart_tx(c);
+}
+
+static void uart_uint(uint8_t n)
+{
+    if (n >= 100) uart_tx('0' + n / 100);
+    if (n >= 10)  uart_tx('0' + (n / 10) % 10);
+    uart_tx('0' + n % 10);
 }
 
 /* ADC para el joystick (referencia AVcc, prescaler 128 = 125 kHz)*/
@@ -266,20 +316,38 @@ int main(void)
 
     ws_init();
     adc_init();
+    uart_init();
     timer0_init();
     sei();
 
+    _delay_ms(100);                         /* deja estabilizar la linea serie antes del primer texto */
+    uart_puts_P(PSTR("Simon Dice\r\n"));
+
     dibujar_cursor();
     uint32_t t_refresco = 0;
+    uint32_t t_beep = 0;
+    uint8_t  beep = 0;
 
     for (;;) {
         evbtn_t ev = btn_evento();
         uint32_t ahora = millis();
 
         mover_cursor();
+        if (ev == BTN_PRESIONADO) {                 /* tono del color actual al presionar */
+            tono(TONOS[col_cursor % COLORES_JUEGO]);
+            beep = 1;
+            t_beep = ahora;
+        }
+        if (beep && (ahora - t_beep >= T_FLASH)) {
+            tono(0);
+            beep = 0;
+        }
         if (ev == BTN_CORTO) {                      /* cambia el color del cursor */
             col_cursor = (col_cursor + 1) % COLORES_CURSOR;
             dibujar_cursor();
+            uart_puts_P(PSTR("Color "));
+            uart_uint(col_cursor);
+            uart_puts_P(PSTR("\r\n"));
         }
 
         if (cambio || (ahora - t_refresco >= REFRESCO_MS)) {    /* se envia si hubo cambios o cada REFRESCO_MS */
