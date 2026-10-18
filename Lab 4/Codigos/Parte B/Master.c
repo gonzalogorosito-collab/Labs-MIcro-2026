@@ -17,7 +17,7 @@
 // PB5 SCK  -> SCK esclavo
 // PC4 SDA / PC5 SCL -> LCD I2C (PCF8574)
 // PD3 Boton Start/Stop (pull-up interno, activo en bajo)
-// PC2 ADC2 potenciometro (commit 2)
+// PC2 ADC2 potenciometro (velocidad)
 // PC3 ADC3 LDR (commit 3)
 // PD2 DHT11 (commit 4)
 
@@ -31,6 +31,9 @@
 #define RESP_NACK   0x15
 #define REINTENTOS  3
 
+#define CANAL_POT   2
+#define VEL_DESCONOCIDA 0xFF
+
 typedef enum { PARADO, MARCHA, EMERGENCIA } estado_t;
 
 volatile uint16_t ms = 0;
@@ -39,6 +42,7 @@ estado_t estado = PARADO;
 uint8_t ultimo_cmd = 0;
 uint8_t ultimo_resp = 0;
 uint8_t actualizar_lcd = 1;
+uint8_t velocidad = VEL_DESCONOCIDA;
 
 //===== Base de tiempo: Timer0 CTC 1 ms =====
 ISR(TIMER0_COMPA_vect)
@@ -61,6 +65,38 @@ uint16_t millis(void)
 	t = ms;
 	sei();
 	return t;
+}
+
+//===== ADC =====
+void adc_init(void)
+{
+	ADMUX = (1 << REFS0);                     // referencia AVcc
+	ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);   // 125 kHz
+}
+
+uint16_t adc_leer(uint8_t canal)
+{
+	ADMUX = (ADMUX & 0xF0) | (canal & 0x0F);
+	ADCSRA |= (1 << ADSC);
+	while (ADCSRA & (1 << ADSC));
+	return ADC;
+}
+
+uint8_t leer_velocidad(void)
+{
+	uint8_t i;
+	uint16_t suma = 0;
+	for (i = 0; i < 4; i++) suma += adc_leer(CANAL_POT);
+	suma >>= 2;
+	return (uint8_t)(((uint32_t)suma * 100UL + 511) / 1023);
+}
+
+uint8_t cambio_significativo(uint8_t nuevo, uint8_t actual)
+{
+	if (actual == VEL_DESCONOCIDA) return 1;
+	if (nuevo == actual) return 0;
+	if (nuevo == 0 || nuevo == 100) return 1;
+	return ((nuevo > actual) ? (nuevo - actual) : (actual - nuevo)) >= 2;
 }
 
 //===== SPI maestro =====
@@ -165,7 +201,10 @@ void lcd_refrescar(void)
 	if (ultimo_cmd != 0) resp = (ultimo_resp == RESP_ACK) ? "ACK" : "NACK";
 
 	twi_lcd_cmd(0x80);
+	if (velocidad == VEL_DESCONOCIDA)
 	snprintf(linea, sizeof(linea), "%-16s", "T:-- V:--- P:000");
+	else
+	snprintf(linea, sizeof(linea), "T:-- V:%3u P:000", velocidad);
 	twi_lcd_msg(linea);
 
 	twi_lcd_cmd(0xC0);
@@ -178,6 +217,8 @@ int main(void)
 {
 	uint16_t ahora;
 	uint16_t t_boton = 0;
+	uint16_t t_pot = 0;
+	uint8_t v;
 
 	DDRD &= ~(1 << PD3);
 	PORTD |= (1 << PD3);
@@ -185,6 +226,7 @@ int main(void)
 	spi_init_maestro();
 	timer0_init();
 	twi_init();
+	adc_init();
 	twi_lcd_init();
 	twi_lcd_cmd(0x0C);                        // cursor apagado
 	twi_lcd_clear();
@@ -218,7 +260,18 @@ int main(void)
 			}
 		}
 
-		// --- (2) Refresco del LCD solo ante cambios ---
+		// --- (2) Potenciometro -> velocidad de la banda ---
+		if ((uint16_t)(ahora - t_pot) >= 50)
+		{
+			t_pot = ahora;
+			v = leer_velocidad();
+			if (cambio_significativo(v, velocidad))
+			{
+				if (enviar_comando(CMD_VEL, v)) velocidad = v;
+			}
+		}
+
+		// --- (3) Refresco del LCD solo ante cambios ---
 		if (actualizar_lcd)
 		{
 			actualizar_lcd = 0;
