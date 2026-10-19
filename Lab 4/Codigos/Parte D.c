@@ -250,6 +250,27 @@ static void dibujar_cursor(void)
     poner(cf, cc, PALETA[col_cursor]);
 }
 
+/* Numeros aleatorios */
+static uint16_t rnd(void)
+{
+    rng ^= rng << 7;
+    rng ^= rng >> 9;
+    rng ^= rng << 8;
+    return rng;
+}
+
+/* Agrega un elemento a la secuencia, distinto de posicion al anterior */
+static void agregar_elemento(void)
+{
+    elem_t e;
+    do {
+        e.f = rnd() & 7;
+        e.c = rnd() & 7;
+    } while (nivel > 0 && e.f == seq[nivel - 1].f && e.c == seq[nivel - 1].c);
+    e.col = rnd() % COLORES_JUEGO;
+    seq[nivel++] = e;
+}
+
 /* Boton del joystick: antirrebote cada 10 ms y eventos*/
 static evbtn_t btn_evento(void)
 {
@@ -308,6 +329,98 @@ static void mover_cursor(void)
     dibujar_cursor();
 }
 
+/* Variables y rutinas de cada estado */
+static uint32_t t_estado;
+static uint8_t  fase;
+static uint8_t  mu_idx, mu_on;              /* ST_MUESTRA */
+static uint8_t  idx, flash;                 /* ST_JUGADOR */
+static uint32_t t_flash;
+
+static const uint16_t DUR_ACIERTO[4] = { 250, 150, 250, 150 };
+static const uint16_t DUR_ERROR[6]   = { 250, 120, 250, 120, 250, 120 };
+
+static void iniciar_libre(void)
+{
+    estado = ST_LIBRE;
+    cf = 3; cc = 3;
+    dibujar_cursor();
+}
+
+static void iniciar_muestra(void)
+{
+    estado = ST_MUESTRA;
+    mu_idx = 0;
+    mu_on = 0;
+    t_estado = millis();
+    limpiar();
+    uart_puts_P(PSTR("Nivel "));
+    uart_uint(nivel);
+    uart_puts_P(PSTR("\r\n"));
+#if DEBUG
+    for (uint8_t i = 0; i < nivel; i++) {               /* fila, columna y color (0 rojo, 1 verde, 2 azul, 3 amarillo) */
+        uart_puts_P(PSTR("  ("));
+        uart_uint(seq[i].f);
+        uart_puts_P(PSTR(","));
+        uart_uint(seq[i].c);
+        uart_puts_P(PSTR(") color "));
+        uart_uint(seq[i].col);
+        uart_puts_P(PSTR("\r\n"));
+    }
+#endif
+}
+
+static void iniciar_jugador(void)
+{
+    estado = ST_JUGADOR;
+    idx = 0;
+    flash = 0;
+    cf = 3; cc = 3;
+    dibujar_cursor();
+}
+
+static void aplicar_acierto(void)
+{
+    if (fase == 0)      { llenar(PALETA[1]); tono(523); }
+    else if (fase == 2) { llenar(PALETA[1]); tono(659); }
+    else                { limpiar(); tono(0); }
+}
+
+static void iniciar_acierto(void)
+{
+    estado = ST_ACIERTO;
+    fase = 0;
+    t_estado = millis();
+    aplicar_acierto();
+}
+
+static void aplicar_error(void)
+{
+    if ((fase & 1) == 0) { llenar(PALETA[0]); tono(TONO_ERROR); }
+    else                 { limpiar(); tono(0); }
+}
+
+static void iniciar_error(void)
+{
+    estado = ST_ERROR;
+    fase = 0;
+    t_estado = millis();
+    aplicar_error();
+}
+
+/* Actualiza el record y vuelve al modo libre */
+static void terminar_partida(void)
+{
+    if (completados > record) {
+        record = completados;
+    }
+    uart_puts_P(PSTR("Fin. Niveles: "));
+    uart_uint(completados);
+    uart_puts_P(PSTR("  Record: "));
+    uart_uint(record);
+    uart_puts_P(PSTR("\r\n"));
+    iniciar_libre();
+}
+
 /* main */
 int main(void)
 {
@@ -320,34 +433,117 @@ int main(void)
     timer0_init();
     sei();
 
+    /* semilla del generador: ruido del joystick y tiempo */
+    rng ^= (uint16_t)(adc_leer(CANAL_X) * 31u + adc_leer(CANAL_Y));
+    if (rng == 0) rng = 0xACE1;
+
     _delay_ms(100);                         /* deja estabilizar la linea serie antes del primer texto */
     uart_puts_P(PSTR("Simon Dice\r\n"));
 
-    dibujar_cursor();
+    iniciar_libre();
     uint32_t t_refresco = 0;
-    uint32_t t_beep = 0;
-    uint8_t  beep = 0;
 
     for (;;) {
         evbtn_t ev = btn_evento();
         uint32_t ahora = millis();
 
-        mover_cursor();
-        if (ev == BTN_PRESIONADO) {                 /* tono del color actual al presionar */
-            tono(TONOS[col_cursor % COLORES_JUEGO]);
-            beep = 1;
-            t_beep = ahora;
-        }
-        if (beep && (ahora - t_beep >= T_FLASH)) {
-            tono(0);
-            beep = 0;
-        }
-        if (ev == BTN_CORTO) {                      /* cambia el color del cursor */
-            col_cursor = (col_cursor + 1) % COLORES_CURSOR;
-            dibujar_cursor();
-            uart_puts_P(PSTR("Color "));
-            uart_uint(col_cursor);
-            uart_puts_P(PSTR("\r\n"));
+        switch (estado) {
+
+        case ST_LIBRE:
+            mover_cursor();
+            if (ev == BTN_CORTO) {                      /* color aleatorio para el cursor */
+                uint8_t nuevo;
+                do { nuevo = rnd() % COLORES_CURSOR; } while (nuevo == col_cursor);
+                col_cursor = nuevo;
+                dibujar_cursor();
+            } else if (ev == BTN_LARGO) {               /* empieza la partida */
+                rng ^= (uint16_t)ahora;
+                if (rng == 0) rng = 0xACE1;
+                nivel = 0;
+                completados = 0;
+                agregar_elemento();
+                iniciar_muestra();
+            }
+            break;
+
+        case ST_MUESTRA:
+            if (!mu_on) {
+                if (ahora - t_estado >= (mu_idx == 0 ? T_INICIAL : T_PAUSA)) {
+                    limpiar();
+                    poner(seq[mu_idx].f, seq[mu_idx].c, PALETA[seq[mu_idx].col]);
+                    tono(TONOS[seq[mu_idx].col]);
+                    mu_on = 1;
+                    t_estado = ahora;
+                }
+            } else if (ahora - t_estado >= T_ENCENDIDO) {
+                limpiar();
+                tono(0);
+                mu_on = 0;
+                t_estado = ahora;
+                mu_idx++;
+                if (mu_idx >= nivel) iniciar_jugador();
+            }
+            break;
+
+        case ST_JUGADOR:
+            if (flash) {                                /* confirmacion de una posicion correcta */
+                if (ahora - t_flash >= T_FLASH) {
+                    flash = 0;
+                    tono(0);
+                    idx++;
+                    if (idx >= nivel) {
+                        completados = nivel;
+                        iniciar_acierto();
+                    } else {
+                        dibujar_cursor();
+                    }
+                }
+                break;
+            }
+            mover_cursor();
+            if (ev == BTN_PRESIONADO) {
+                if (cf == seq[idx].f && cc == seq[idx].c) {
+                    limpiar();
+                    poner(cf, cc, PALETA[seq[idx].col]);
+                    tono(TONOS[seq[idx].col]);
+                    flash = 1;
+                    t_flash = ahora;
+                } else {
+                    iniciar_error();
+                }
+            }
+            break;
+
+        case ST_ACIERTO:
+            if (ahora - t_estado >= DUR_ACIERTO[fase]) {
+                t_estado = ahora;
+                fase++;
+                if (fase >= 4) {
+                    tono(0);
+                    if (nivel >= MAX_NIVEL) {
+                        terminar_partida();             /* juego completo */
+                    } else {
+                        agregar_elemento();
+                        iniciar_muestra();
+                    }
+                } else {
+                    aplicar_acierto();
+                }
+            }
+            break;
+
+        case ST_ERROR:
+            if (ahora - t_estado >= DUR_ERROR[fase]) {
+                t_estado = ahora;
+                fase++;
+                if (fase >= 6) {
+                    tono(0);
+                    terminar_partida();
+                } else {
+                    aplicar_error();
+                }
+            }
+            break;
         }
 
         if (cambio || (ahora - t_refresco >= REFRESCO_MS)) {    /* se envia si hubo cambios o cada REFRESCO_MS */
