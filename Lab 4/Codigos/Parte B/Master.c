@@ -18,7 +18,7 @@
 // PC4 SDA / PC5 SCL -> LCD I2C (PCF8574)
 // PD3 Boton Start/Stop (pull-up interno, activo en bajo)
 // PC2 ADC2 potenciometro (velocidad)
-// PC3 ADC3 LDR (commit 3)
+// PC3 ADC3 LDR (5V - 10k - PC3 - LDR - GND)
 // PD2 DHT11 (commit 4)
 
 //===== Protocolo SPI: [CMD][VALOR][respuesta] =====
@@ -34,6 +34,11 @@
 #define CANAL_POT   2
 #define VEL_DESCONOCIDA 0xFF
 
+#define CANAL_LDR         3
+#define LDR_UMBRAL_PIEZA  750                 // lectura >= -> pieza presente
+#define LDR_UMBRAL_LIBRE  675                 // lectura <= -> pieza liberada
+#define LDR_CONFIRMAR     3                   // lecturas consecutivas (x20 ms)
+
 typedef enum { PARADO, MARCHA, EMERGENCIA } estado_t;
 
 volatile uint16_t ms = 0;
@@ -43,6 +48,7 @@ uint8_t ultimo_cmd = 0;
 uint8_t ultimo_resp = 0;
 uint8_t actualizar_lcd = 1;
 uint8_t velocidad = VEL_DESCONOCIDA;
+uint16_t piezas = 0;
 
 //===== Base de tiempo: Timer0 CTC 1 ms =====
 ISR(TIMER0_COMPA_vect)
@@ -97,6 +103,40 @@ uint8_t cambio_significativo(uint8_t nuevo, uint8_t actual)
 	if (nuevo == actual) return 0;
 	if (nuevo == 0 || nuevo == 100) return 1;
 	return ((nuevo > actual) ? (nuevo - actual) : (actual - nuevo)) >= 2;
+}
+
+//===== Deteccion de pieza (llamar cada 20 ms; devuelve 1 al llegar una pieza) =====
+uint8_t detectar_pieza(void)
+{
+	static uint8_t presente = 0, cuenta = 0;
+	uint16_t lectura = adc_leer(CANAL_LDR);
+
+	if (!presente)
+	{
+		if (lectura >= LDR_UMBRAL_PIEZA)
+		{
+			if (++cuenta >= LDR_CONFIRMAR)
+			{
+				presente = 1;
+				cuenta = 0;
+				return 1;
+			}
+		}
+		else cuenta = 0;
+	}
+	else
+	{
+		if (lectura <= LDR_UMBRAL_LIBRE)
+		{
+			if (++cuenta >= LDR_CONFIRMAR)
+			{
+				presente = 0;
+				cuenta = 0;
+			}
+		}
+		else cuenta = 0;
+	}
+	return 0;
 }
 
 //===== SPI maestro =====
@@ -202,9 +242,9 @@ void lcd_refrescar(void)
 
 	twi_lcd_cmd(0x80);
 	if (velocidad == VEL_DESCONOCIDA)
-	snprintf(linea, sizeof(linea), "%-16s", "T:-- V:--- P:000");
+	snprintf(linea, sizeof(linea), "T:-- V:--- P:%03u", piezas);
 	else
-	snprintf(linea, sizeof(linea), "T:-- V:%3u P:000", velocidad);
+	snprintf(linea, sizeof(linea), "T:-- V:%3u P:%03u", velocidad, piezas);
 	twi_lcd_msg(linea);
 
 	twi_lcd_cmd(0xC0);
@@ -218,6 +258,7 @@ int main(void)
 	uint16_t ahora;
 	uint16_t t_boton = 0;
 	uint16_t t_pot = 0;
+	uint16_t t_ldr = 0;
 	uint8_t v;
 
 	DDRD &= ~(1 << PD3);
@@ -271,7 +312,19 @@ int main(void)
 			}
 		}
 
-		// --- (3) Refresco del LCD solo ante cambios ---
+		// --- (3) LDR -> deteccion de pieza, contador y piston ---
+		if ((uint16_t)(ahora - t_ldr) >= 20)
+		{
+			t_ldr = ahora;
+			if (detectar_pieza() && estado == MARCHA)
+			{
+				piezas++;
+				if (piezas > 999) piezas = 0;
+				enviar_comando(CMD_PISTON, 0);
+			}
+		}
+
+		// --- (4) Refresco del LCD solo ante cambios ---
 		if (actualizar_lcd)
 		{
 			actualizar_lcd = 0;

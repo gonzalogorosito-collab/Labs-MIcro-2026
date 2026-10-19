@@ -16,7 +16,7 @@
 // PD6 OC0A -> ENA L298N (PWM banda)
 // PD7      -> IN1 L298N
 // PB0      -> IN2 L298N
-// PB1 OC1A -> servo SG90 (commit 3)
+// PB1 OC1A -> servo SG90 (piston)
 // PD3 buzzer activo (commit 4)
 
 //===== Protocolo SPI: [CMD][VALOR][respuesta] =====
@@ -30,13 +30,20 @@
 
 #define PWM_MIN     80                        // duty minimo para que arranque el motor
 
+#define SERVO_REPOSO     2000                 // 1,0 ms (cuentas de 0,5 us)
+#define SERVO_EXTENDIDO  4000                 // 2,0 ms
+#define T_PISTON_MS      500
+
 volatile uint8_t indice = 0;
 volatile uint8_t cmd_rx, valor_rx;
 volatile uint8_t trama_lista = 0;
 volatile uint8_t cmd_nuevo, valor_nuevo;
+volatile uint16_t ms = 0;
 
 uint8_t en_marcha = 0;
 uint8_t velocidad = 0;
+uint8_t piston_activo = 0;
+uint16_t t_piston = 0;
 
 uint8_t trama_valida(uint8_t c, uint8_t v)
 {
@@ -87,6 +94,29 @@ ISR(SPI_STC_vect)
 	}
 }
 
+//===== Base de tiempo: Timer2 CTC 1 ms =====
+ISR(TIMER2_COMPA_vect)
+{
+	ms++;
+}
+
+void timer2_init(void)
+{
+	TCCR2A = (1 << WGM21);
+	OCR2A = 249;                              // 16 MHz / 64 / 250 = 1 kHz
+	TCCR2B = (1 << CS22);                     // prescaler 64
+	TIMSK2 = (1 << OCIE2A);
+}
+
+uint16_t millis(void)
+{
+	uint16_t t;
+	cli();
+	t = ms;
+	sei();
+	return t;
+}
+
 //===== Motor de la banda: Timer0 Fast PWM en OC0A (~976 Hz) =====
 void motor_init(void)
 {
@@ -113,6 +143,29 @@ void motor_aplicar(void)
 	}
 }
 
+//===== Servo del piston: Timer1 Fast PWM modo 14, 50 Hz =====
+void servo_init(void)
+{
+	DDRB |= (1 << PB1);
+	ICR1 = 39999;                             // 16 MHz / 8 / 40000 = 50 Hz
+	OCR1A = SERVO_REPOSO;
+	TCCR1A = (1 << COM1A1) | (1 << WGM11);
+	TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);
+}
+
+void piston_extender(void)
+{
+	OCR1A = SERVO_EXTENDIDO;
+	piston_activo = 1;
+	t_piston = millis();
+}
+
+void piston_retraer(void)
+{
+	OCR1A = SERVO_REPOSO;
+	piston_activo = 0;
+}
+
 //===== Ejecucion de comandos =====
 void ejecutar(uint8_t c, uint8_t v)
 {
@@ -128,10 +181,14 @@ void ejecutar(uint8_t c, uint8_t v)
 		en_marcha = 0;
 		PORTD &= ~((1 << PD4) | (1 << PD5));
 		motor_aplicar();
+		piston_retraer();
 		break;
 		case CMD_VEL:
 		velocidad = v;
 		motor_aplicar();
+		break;
+		case CMD_PISTON:
+		if (en_marcha) piston_extender();
 		break;
 		default:
 		break;
@@ -147,6 +204,8 @@ int main(void)
 	PORTD &= ~((1 << PD4) | (1 << PD5));
 
 	motor_init();
+	servo_init();
+	timer2_init();
 	spi_init_esclavo();
 	sei();
 
@@ -166,6 +225,12 @@ int main(void)
 			trama_lista = 0;
 			sei();
 			ejecutar(c, v);
+		}
+
+		// --- (3) Retorno del piston tras T_PISTON_MS ---
+		if (piston_activo && (uint16_t)(millis() - t_piston) >= T_PISTON_MS)
+		{
+			piston_retraer();
 		}
 	}
 }
