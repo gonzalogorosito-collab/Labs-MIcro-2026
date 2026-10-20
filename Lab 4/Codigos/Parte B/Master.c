@@ -19,7 +19,7 @@
 // PD3 Boton Start/Stop (pull-up interno, activo en bajo)
 // PC2 ADC2 potenciometro (velocidad)
 // PC3 ADC3 LDR (5V - 10k - PC3 - LDR - GND)
-// PD2 DHT11 (commit 4)
+// PD2 DHT11 (datos)
 
 //===== Protocolo SPI: [CMD][VALOR][respuesta] =====
 #define CMD_START   0x01
@@ -31,6 +31,9 @@
 #define RESP_NACK   0x15
 #define REINTENTOS  3
 
+#define MOTIVO_TEMP    1                      // VALOR de CMD_EMERG: sobretemperatura
+#define MOTIVO_SENSOR  2                      // VALOR de CMD_EMERG: falla del DHT11
+
 #define CANAL_POT   2
 #define VEL_DESCONOCIDA 0xFF
 
@@ -39,16 +42,31 @@
 #define LDR_UMBRAL_LIBRE  675                 // lectura <= -> pieza liberada
 #define LDR_CONFIRMAR     3                   // lecturas consecutivas (x20 ms)
 
+#define DHT_PIN        PD2
+#define DHT_LEER       ((PIND >> DHT_PIN) & 1)
+#define DHT_OK         0
+#define DHT_ERR_RESP   1
+#define DHT_ERR_CHECK  2
+#define PERIODO_DHT    2000                   // ms
+#define TEMP_EMERG     30                     // >= -> paro de emergencia
+#define TEMP_REARME    28                     // <  -> se permite el rearme
+#define ERRORES_MAX    3                      // lecturas fallidas seguidas -> falla
+
 typedef enum { PARADO, MARCHA, EMERGENCIA } estado_t;
 
 volatile uint16_t ms = 0;
 
 estado_t estado = PARADO;
+uint8_t motivo = 0;
+uint8_t emerg_confirmada = 0;
 uint8_t ultimo_cmd = 0;
 uint8_t ultimo_resp = 0;
 uint8_t actualizar_lcd = 1;
 uint8_t velocidad = VEL_DESCONOCIDA;
 uint16_t piezas = 0;
+uint8_t temperatura = 0;
+uint8_t dht_valido = 0;
+uint8_t errores_dht = 0;
 
 //===== Base de tiempo: Timer0 CTC 1 ms =====
 ISR(TIMER0_COMPA_vect)
@@ -139,6 +157,69 @@ uint8_t detectar_pieza(void)
 	return 0;
 }
 
+//======================== DHT11 ===========================
+// --- Espera a que la linea tome el nivel indicado, con timeout en us ---
+static uint8_t dht_esperar(uint8_t nivel, uint8_t timeout_us)
+{
+	while (DHT_LEER != nivel)
+	{
+		if (timeout_us-- == 0) return 0;
+		_delay_us(1);
+	}
+	return 1;
+}
+
+uint8_t dht11_leer(uint8_t *temp, uint8_t *hum)
+{
+	uint8_t datos[5] = {0, 0, 0, 0, 0};
+	uint8_t i, j;
+	uint8_t sreg;
+
+	// --- Pulso de inicio: linea en bajo 20 ms ---
+	DDRD  |=  (1 << DHT_PIN);
+	PORTD &= ~(1 << DHT_PIN);
+	_delay_ms(20);
+
+	// --- Liberar la linea y pasar a entrada (pull-up interno activo) ---
+	sreg = SREG;
+	cli();
+	PORTD |=  (1 << DHT_PIN);
+	_delay_us(30);
+	DDRD  &= ~(1 << DHT_PIN);
+
+	// --- Respuesta del sensor: 80 us bajo, 80 us alto, inicio del primer bit ---
+	if (!dht_esperar(0, 100) || !dht_esperar(1, 100) || !dht_esperar(0, 100))
+	{
+		SREG = sreg;
+		return DHT_ERR_RESP;
+	}
+
+	// --- Lectura de 40 bits: alto ~27 us = 0, alto ~70 us = 1 ---
+	for (i = 0; i < 5; i++)
+	{
+		for (j = 0; j < 8; j++)
+		{
+			if (!dht_esperar(1, 80)) { SREG = sreg; return DHT_ERR_RESP; }
+			_delay_us(40);
+			datos[i] <<= 1;
+			if (DHT_LEER)
+			{
+				datos[i] |= 1;
+				if (!dht_esperar(0, 80)) { SREG = sreg; return DHT_ERR_RESP; }
+			}
+		}
+	}
+	SREG = sreg;
+
+	// --- Verificacion del checksum ---
+	if ((uint8_t)(datos[0] + datos[1] + datos[2] + datos[3]) != datos[4])
+	return DHT_ERR_CHECK;
+
+	*hum  = datos[0];
+	*temp = datos[2];
+	return DHT_OK;
+}
+
 //===== SPI maestro =====
 void spi_init_maestro(void)
 {
@@ -185,6 +266,14 @@ uint8_t enviar_comando(uint8_t cmd, uint8_t valor)
 	return (resp == RESP_ACK);
 }
 
+//===== Emergencia =====
+void entrar_emergencia(uint8_t m)
+{
+	estado = EMERGENCIA;
+	motivo = m;
+	emerg_confirmada = enviar_comando(CMD_EMERG, m);
+}
+
 //===== Boton con antirrebote (llamar cada 10 ms) =====
 uint8_t leer_boton(void)
 {
@@ -223,12 +312,12 @@ const char *nombre_cmd(uint8_t c)
 	}
 }
 
-const char *nombre_estado(estado_t e)
+const char *nombre_estado(void)
 {
-	switch (e)
+	switch (estado)
 	{
 		case MARCHA:     return "MAR";
-		case EMERGENCIA: return "EMR";
+		case EMERGENCIA: return (motivo == MOTIVO_SENSOR) ? "FAL" : "EMR";
 		default:         return "PAR";
 	}
 }
@@ -236,19 +325,24 @@ const char *nombre_estado(estado_t e)
 void lcd_refrescar(void)
 {
 	char linea[17];
+	char t_txt[3];
+	char v_txt[4];
 	const char *resp = "";
 
 	if (ultimo_cmd != 0) resp = (ultimo_resp == RESP_ACK) ? "ACK" : "NACK";
 
+	if (dht_valido) snprintf(t_txt, sizeof(t_txt), "%2u", temperatura);
+	else            snprintf(t_txt, sizeof(t_txt), "--");
+
+	if (velocidad == VEL_DESCONOCIDA) snprintf(v_txt, sizeof(v_txt), "---");
+	else                              snprintf(v_txt, sizeof(v_txt), "%3u", velocidad);
+
 	twi_lcd_cmd(0x80);
-	if (velocidad == VEL_DESCONOCIDA)
-	snprintf(linea, sizeof(linea), "T:-- V:--- P:%03u", piezas);
-	else
-	snprintf(linea, sizeof(linea), "T:-- V:%3u P:%03u", velocidad, piezas);
+	snprintf(linea, sizeof(linea), "T:%s V:%s P:%03u", t_txt, v_txt, piezas);
 	twi_lcd_msg(linea);
 
 	twi_lcd_cmd(0xC0);
-	snprintf(linea, sizeof(linea), "%s %-6s %-5s", nombre_estado(estado), nombre_cmd(ultimo_cmd), resp);
+	snprintf(linea, sizeof(linea), "%s %-6s %-5s", nombre_estado(), nombre_cmd(ultimo_cmd), resp);
 	twi_lcd_msg(linea);
 }
 
@@ -259,7 +353,8 @@ int main(void)
 	uint16_t t_boton = 0;
 	uint16_t t_pot = 0;
 	uint16_t t_ldr = 0;
-	uint8_t v;
+	uint16_t t_dht;
+	uint8_t v, t, h;
 
 	DDRD &= ~(1 << PD3);
 	PORTD |= (1 << PD3);
@@ -275,6 +370,7 @@ int main(void)
 	sei();
 
 	enviar_comando(CMD_STOP, 0);              // estado conocido al arrancar
+	t_dht = millis() - PERIODO_DHT;           // primera lectura inmediata
 
 	while (1)
 	{
@@ -295,6 +391,10 @@ int main(void)
 					if (enviar_comando(CMD_STOP, 0)) estado = PARADO;
 					break;
 					case EMERGENCIA:
+					if (dht_valido && temperatura < TEMP_REARME)
+					{
+						if (enviar_comando(CMD_START, 0)) estado = MARCHA;
+					}
 					break;
 				}
 				actualizar_lcd = 1;
@@ -324,7 +424,33 @@ int main(void)
 			}
 		}
 
-		// --- (4) Refresco del LCD solo ante cambios ---
+		// --- (4) DHT11 -> temperatura del motor y paro de emergencia ---
+		if ((uint16_t)(ahora - t_dht) >= PERIODO_DHT)
+		{
+			t_dht = ahora;
+			if (dht11_leer(&t, &h) == DHT_OK)
+			{
+				temperatura = t;
+				dht_valido = 1;
+				errores_dht = 0;
+				if (t >= TEMP_EMERG && !(estado == EMERGENCIA && motivo == MOTIVO_TEMP))
+				entrar_emergencia(MOTIVO_TEMP);
+			}
+			else
+			{
+				if (errores_dht < ERRORES_MAX) errores_dht++;
+				if (errores_dht >= ERRORES_MAX && dht_valido)
+				{
+					dht_valido = 0;
+					if (estado != EMERGENCIA) entrar_emergencia(MOTIVO_SENSOR);
+				}
+			}
+			if (estado == EMERGENCIA && !emerg_confirmada)
+			emerg_confirmada = enviar_comando(CMD_EMERG, motivo);
+			actualizar_lcd = 1;
+		}
+
+		// --- (5) Refresco del LCD solo ante cambios ---
 		if (actualizar_lcd)
 		{
 			actualizar_lcd = 0;

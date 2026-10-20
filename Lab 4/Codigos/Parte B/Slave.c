@@ -17,7 +17,7 @@
 // PD7      -> IN1 L298N
 // PB0      -> IN2 L298N
 // PB1 OC1A -> servo SG90 (piston)
-// PD3 buzzer activo (commit 4)
+// PD3      -> buzzer activo
 
 //===== Protocolo SPI: [CMD][VALOR][respuesta] =====
 #define CMD_START   0x01
@@ -28,11 +28,16 @@
 #define RESP_ACK    0x06
 #define RESP_NACK   0x15
 
+#define MOTIVO_TEMP    1                      // VALOR de CMD_EMERG: sobretemperatura
+#define MOTIVO_SENSOR  2                      // VALOR de CMD_EMERG: falla del DHT11
+
 #define PWM_MIN     80                        // duty minimo para que arranque el motor
 
 #define SERVO_REPOSO     2000                 // 1,0 ms (cuentas de 0,5 us)
 #define SERVO_EXTENDIDO  4000                 // 2,0 ms
 #define T_PISTON_MS      500
+
+#define T_ALARMA_MS      250                  // semiperiodo de rojo + buzzer en emergencia
 
 volatile uint8_t indice = 0;
 volatile uint8_t cmd_rx, valor_rx;
@@ -44,11 +49,14 @@ uint8_t en_marcha = 0;
 uint8_t velocidad = 0;
 uint8_t piston_activo = 0;
 uint16_t t_piston = 0;
+uint8_t alarma = 0;
+uint16_t t_alarma = 0;
 
 uint8_t trama_valida(uint8_t c, uint8_t v)
 {
 	if (c < CMD_START || c > CMD_EMERG) return 0;
 	if (c == CMD_VEL && v > 100) return 0;
+	if (c == CMD_EMERG && v != MOTIVO_TEMP && v != MOTIVO_SENSOR) return 0;
 	return 1;
 }
 
@@ -166,20 +174,28 @@ void piston_retraer(void)
 	piston_activo = 0;
 }
 
+//===== Senalizacion de falla / emergencia =====
+void alarma_detener(void)
+{
+	alarma = 0;
+	PORTD &= ~((1 << PD3) | (1 << PD5));
+}
+
 //===== Ejecucion de comandos =====
 void ejecutar(uint8_t c, uint8_t v)
 {
 	switch (c)
 	{
 		case CMD_START:
+		alarma_detener();
 		en_marcha = 1;
 		PORTD |= (1 << PD4);
-		PORTD &= ~(1 << PD5);
 		motor_aplicar();
 		break;
 		case CMD_STOP:
+		alarma_detener();
 		en_marcha = 0;
-		PORTD &= ~((1 << PD4) | (1 << PD5));
+		PORTD &= ~(1 << PD4);
 		motor_aplicar();
 		piston_retraer();
 		break;
@@ -189,6 +205,24 @@ void ejecutar(uint8_t c, uint8_t v)
 		break;
 		case CMD_PISTON:
 		if (en_marcha) piston_extender();
+		break;
+		case CMD_EMERG:
+		en_marcha = 0;
+		PORTD &= ~(1 << PD4);
+		motor_aplicar();
+		piston_retraer();
+		if (v == MOTIVO_TEMP)
+		{
+			alarma = 1;                   // rojo + buzzer intermitentes
+			t_alarma = millis();
+			PORTD |= (1 << PD5) | (1 << PD3);
+		}
+		else
+		{
+			alarma = 0;                   // falla: rojo fijo, sin buzzer
+			PORTD &= ~(1 << PD3);
+			PORTD |= (1 << PD5);
+		}
 		break;
 		default:
 		break;
@@ -200,8 +234,8 @@ int main(void)
 {
 	uint8_t c, v;
 
-	DDRD |= (1 << PD4) | (1 << PD5);
-	PORTD &= ~((1 << PD4) | (1 << PD5));
+	DDRD |= (1 << PD3) | (1 << PD4) | (1 << PD5);
+	PORTD &= ~((1 << PD3) | (1 << PD4) | (1 << PD5));
 
 	motor_init();
 	servo_init();
@@ -231,6 +265,13 @@ int main(void)
 		if (piston_activo && (uint16_t)(millis() - t_piston) >= T_PISTON_MS)
 		{
 			piston_retraer();
+		}
+
+		// --- (4) Intermitencia de rojo + buzzer en emergencia ---
+		if (alarma && (uint16_t)(millis() - t_alarma) >= T_ALARMA_MS)
+		{
+			t_alarma += T_ALARMA_MS;
+			PORTD ^= (1 << PD5) | (1 << PD3);
 		}
 	}
 }
