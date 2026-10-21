@@ -66,6 +66,16 @@ int8_t ultimo_estado_lcd = -1;
 uint8_t ventana_abierta = 0; 
 
 int main(void) {
+	// Configuración de E/S en Puerto D
+	DDRD |= (1 << LED_ARMADO) | (1 << LED_ALARMA) | (1 << BUZZER);
+	
+	// Configurar PD3 como entrada (con resistencia pull-down externa a GND)
+	DDRD &= ~(1 << MOVIMIENTO_PIN);
+	PORTD &= ~(1 << MOVIMIENTO_PIN); 
+
+	DDRB &= ~BTN_MASK;  // Pulsadores como entradas
+	PORTB |= BTN_MASK;  // Pull-up interna para los botones de control
+
 	twi_init();          
 	twi_lcd_init();     
 	
@@ -77,6 +87,25 @@ int main(void) {
 	_delay_ms(10);
 	twi_lcd_msg("ARMADO");
 	ultimo_estado_lcd = 0;
+	
+	USART_Init();      
+	ADC_Init();        
+	sei();               
 
-    while(1);
+	USART_Send_String("SISTEMA LISTO\r\n");
+
+	while(1) {
+		// 1. Lectura de la LDR con Histéresis limpia:
+		uint16_t val_ldr = ADC_Read(2);
+		if (val_ldr > 450) {
+			ventana_abierta = 1; 
+		} else if (val_ldr < 250) {
+			ventana_abierta = 0; 
+		}
+		
+		// 2. Lectura del botón de movimiento en Pin 3 (PD3)
+		uint8_t movimiento = ((PIND & (1 << MOVIMIENTO_PIN)) != 0);
+
+		_delay_ms(50);
+	}
 }
