@@ -56,6 +56,12 @@ static const color_t PALETA[6] = {
 static const uint16_t TONOS[COLORES_JUEGO] = { 330, 392, 440, 523 };
 #define TONO_ERROR      110
 
+/* Direcciones EEPROM */
+#define EE_MAGIC   0            /* 0xA5 si la memoria ya fue inicializada */
+#define EE_RECORD  1            /* niveles completados, record historico */
+#define EE_ULTIMO  2            /* nivel alcanzado en la ultima partida */
+#define EE_VALIDO  0xA5
+
 /*Maquina de estados  */
 typedef enum {
     ST_RECORD,      /* al encender: muestra el record */
@@ -155,6 +161,28 @@ static void uart_uint(uint8_t n)
     if (n >= 100) uart_tx('0' + n / 100);
     if (n >= 10)  uart_tx('0' + (n / 10) % 10);
     uart_tx('0' + n % 10);
+}
+
+/*EEPROM por registros (EEAR, EEDR, EECR) */
+static uint8_t ee_leer(uint8_t dir)
+{
+    while (EECR & (1 << EEPE));             /* espera que termine una escritura previa */
+    EEAR = dir;
+    EECR |= (1 << EERE);
+    return EEDR;
+}
+
+static void ee_escribir(uint8_t dir, uint8_t dato)
+{
+    if (ee_leer(dir) == dato) return;       /* no se escribe si el valor no cambia */
+    while (EECR & (1 << EEPE));
+    EEAR = dir;
+    EEDR = dato;
+    uint8_t s = SREG;
+    cli();                                  /* EEPE debe activarse dentro de 4 ciclos de EEMPE */
+    EECR |= (1 << EEMPE);
+    EECR |= (1 << EEPE);
+    SREG = s;
 }
 
 /* ADC para el joystick (referencia AVcc, prescaler 128 = 125 kHz)*/
@@ -407,18 +435,27 @@ static void iniciar_error(void)
     aplicar_error();
 }
 
-/* Actualiza el record y vuelve al modo libre */
+/* Guarda la partida en la EEPROM y vuelve al modo libre */
 static void terminar_partida(void)
 {
     if (completados > record) {
         record = completados;
+        ee_escribir(EE_RECORD, record);
     }
+    ee_escribir(EE_ULTIMO, nivel);
     uart_puts_P(PSTR("Fin. Niveles: "));
     uart_uint(completados);
     uart_puts_P(PSTR("  Record: "));
     uart_uint(record);
     uart_puts_P(PSTR("\r\n"));
     iniciar_libre();
+}
+
+static void mostrar_record(void)
+{
+    limpiar();
+    for (uint8_t i = 0; i < record && i < 64; i++) fb[i] = PALETA[2];   /* un LED azul por nivel */
+    cambio = 1;
 }
 
 /* main */
@@ -433,14 +470,26 @@ int main(void)
     timer0_init();
     sei();
 
+    /* EEPROM: primera vez se inicializa */
+    if (ee_leer(EE_MAGIC) != EE_VALIDO) {
+        ee_escribir(EE_RECORD, 0);
+        ee_escribir(EE_ULTIMO, 0);
+        ee_escribir(EE_MAGIC, EE_VALIDO);
+    }
+    record = ee_leer(EE_RECORD);
+
     /* semilla del generador: ruido del joystick y tiempo */
     rng ^= (uint16_t)(adc_leer(CANAL_X) * 31u + adc_leer(CANAL_Y));
     if (rng == 0) rng = 0xACE1;
 
     _delay_ms(100);                         /* deja estabilizar la linea serie antes del primer texto */
-    uart_puts_P(PSTR("Simon Dice\r\n"));
+    uart_puts_P(PSTR("Simon Dice - Record: "));
+    uart_uint(record);
+    uart_puts_P(PSTR("\r\n"));
 
-    iniciar_libre();
+    estado = ST_RECORD;
+    t_estado = millis();
+    mostrar_record();
     uint32_t t_refresco = 0;
 
     for (;;) {
@@ -448,6 +497,10 @@ int main(void)
         uint32_t ahora = millis();
 
         switch (estado) {
+
+        case ST_RECORD:
+            if (ahora - t_estado >= T_RECORD) iniciar_libre();
+            break;
 
         case ST_LIBRE:
             mover_cursor();
