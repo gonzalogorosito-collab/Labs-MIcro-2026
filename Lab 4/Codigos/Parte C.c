@@ -65,6 +65,8 @@ volatile uint8_t sirena_silenciada = 0;
 int8_t ultimo_estado_lcd = -1; 
 uint8_t ventana_abierta = 0; 
 
+void procesar_comando(char recibido);
+
 int main(void) {
 	// Configuración de E/S en Puerto D
 	DDRD |= (1 << LED_ARMADO) | (1 << LED_ALARMA) | (1 << BUZZER);
@@ -95,7 +97,6 @@ int main(void) {
 	USART_Send_String("SISTEMA LISTO\r\n");
 
 	while(1) {
-		// 1. Lectura de la LDR con Histéresis limpia:
 		uint16_t val_ldr = ADC_Read(2);
 		if (val_ldr > 450) {
 			ventana_abierta = 1; 
@@ -103,9 +104,23 @@ int main(void) {
 			ventana_abierta = 0; 
 		}
 		
-		// 2. Lectura del botón de movimiento en Pin 3 (PD3)
 		uint8_t movimiento = ((PIND & (1 << MOVIMIENTO_PIN)) != 0);
+
+		// Lectura de pulsadores locales en Puerto B (flanco de bajada)
+		static uint8_t btn_prev = BTN_MASK;
+		uint8_t btn_now = PINB & BTN_MASK;
+		uint8_t btn_press = btn_prev & ~btn_now;
+		btn_prev = btn_now;
+
+		if (btn_press & (1 << BTN_ARMAR))    procesar_comando(sistema_armado ? 'D' : 'A');
+		if (btn_press & (1 << BTN_SILENCIO)) procesar_comando('S');
+		if (btn_press & (1 << BTN_MODO))     procesar_comando(modo_auto ? 'M' : 'U');
+		if (btn_press & (1 << BTN_FORZAR))   procesar_comando('F');
 
 		_delay_ms(50);
 	}
+}
+
+void procesar_comando(char recibido) {
+    // Declaración pendiente
 }
