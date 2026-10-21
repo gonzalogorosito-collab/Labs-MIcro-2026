@@ -1,14 +1,6 @@
 //===============================================================
 // Problema B - Maestro: decisiones, sensores e interfaz
 //===============================================================
-#define F_CPU 16000000UL
-#define PCF8574 0x27
-
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include <util/delay.h>
-#include <stdio.h>
-#include "twi_lcd.h"
 
 //===== Mapeo de pines =====
 // PB2 SS   -> SS esclavo
@@ -20,6 +12,44 @@
 // PC2 ADC2 potenciometro (velocidad)
 // PC3 ADC3 LDR (5V - 10k - PC3 - LDR - GND)
 // PD2 DHT11 (datos)
+
+#define F_CPU 16000000UL
+#define PCF8574 0x27
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <stdio.h>
+#include "twi_lcd.h"
+
+//===== Inicializacion del LCD segun datasheet HD44780 =====
+void lcd_nibble(uint8_t n)                    // n en el nibble alto
+{
+	PCF8574_write(n | 0x08 | 0x04);           // backlight + EN = 1
+	_delay_us(1);
+	PCF8574_write(n | 0x08);                  // EN = 0
+	_delay_us(50);
+}
+
+void lcd_iniciar(void)
+{
+	_delay_ms(50);                            // espera al encendido del LCD
+	PCF8574_write(0x08);
+	lcd_nibble(0x30);                         // 3 veces 0x3: fuerza modo 8 bits
+	_delay_ms(5);
+	lcd_nibble(0x30);
+	_delay_us(150);
+	lcd_nibble(0x30);
+	_delay_us(150);
+	lcd_nibble(0x20);                         // pasa a modo 4 bits
+	_delay_us(150);
+	twi_lcd_cmd(0x28);                        // 4 bits, 2 lineas
+	twi_lcd_cmd(0x0C);                        // display on, cursor off
+	twi_lcd_cmd(0x01);                        // clear
+	_delay_ms(2);
+	twi_lcd_cmd(0x06);                        // autoincremento
+}
+
 
 //===== Protocolo SPI: [CMD][VALOR][respuesta] =====
 #define CMD_START   0x01
@@ -322,23 +352,33 @@ const char *nombre_estado(void)
 	}
 }
 
+// --- Escribe n en 'ancho' posiciones, alineado a la derecha ---
+void poner_num(char *p, uint16_t n, uint8_t ancho, char relleno)
+{
+	int8_t i;
+	for (i = ancho - 1; i >= 0; i--)
+	{
+		if (n > 0 || i == ancho - 1)
+		{
+			p[i] = '0' + (n % 10);
+			n /= 10;
+		}
+		else p[i] = relleno;
+	}
+}
+
 void lcd_refrescar(void)
 {
-	char linea[17];
-	char t_txt[3];
-	char v_txt[4];
+	char linea[17] = "T:-- V:--- P:000";
 	const char *resp = "";
 
 	if (ultimo_cmd != 0) resp = (ultimo_resp == RESP_ACK) ? "ACK" : "NACK";
 
-	if (dht_valido) snprintf(t_txt, sizeof(t_txt), "%2u", temperatura);
-	else            snprintf(t_txt, sizeof(t_txt), "--");
-
-	if (velocidad == VEL_DESCONOCIDA) snprintf(v_txt, sizeof(v_txt), "---");
-	else                              snprintf(v_txt, sizeof(v_txt), "%3u", velocidad);
+	if (dht_valido) poner_num(&linea[2], temperatura, 2, ' ');
+	if (velocidad != VEL_DESCONOCIDA) poner_num(&linea[7], velocidad, 3, ' ');
+	poner_num(&linea[13], piezas, 3, '0');
 
 	twi_lcd_cmd(0x80);
-	snprintf(linea, sizeof(linea), "T:%s V:%s P:%03u", t_txt, v_txt, piezas);
 	twi_lcd_msg(linea);
 
 	twi_lcd_cmd(0xC0);
@@ -363,9 +403,7 @@ int main(void)
 	timer0_init();
 	twi_init();
 	adc_init();
-	twi_lcd_init();
-	twi_lcd_cmd(0x0C);                        // cursor apagado
-	twi_lcd_clear();
+	lcd_iniciar();
 	_delay_ms(2);
 	sei();
 
@@ -447,6 +485,7 @@ int main(void)
 			}
 			if (estado == EMERGENCIA && !emerg_confirmada)
 			emerg_confirmada = enviar_comando(CMD_EMERG, motivo);
+			lcd_iniciar();
 			actualizar_lcd = 1;
 		}
 
