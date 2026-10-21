@@ -55,7 +55,28 @@ uint16_t ADC_Read(uint8_t channel) {
 	return ADC;
 }
 
+// Variables de estado globales con volatile
+volatile uint8_t sistema_armado = 1;      // 1: Armado, 0: Desarmado
+volatile uint8_t modo_auto = 1;            // 1: Modo Automático, 0: Modo Manual
+volatile uint8_t alarma_activa = 0;
+volatile uint8_t sirena_silenciada = 0;
+
+// Variables de control de estado para evitar parpadeos en la LCD
+int8_t ultimo_estado_lcd = -1; 
+uint8_t ventana_abierta = 0; 
+
 int main(void) {
-    // Esqueleto inicial
+	twi_init();          
+	twi_lcd_init();     
+	
+	twi_lcd_clear();
+	_delay_ms(10);
+	twi_lcd_msg("INICIO");
+	_delay_ms(1500);    
+	twi_lcd_clear();
+	_delay_ms(10);
+	twi_lcd_msg("ARMADO");
+	ultimo_estado_lcd = 0;
+
     while(1);
 }
