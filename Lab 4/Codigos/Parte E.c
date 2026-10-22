@@ -134,3 +134,49 @@ void lcd_set_cursor(uint8_t row, uint8_t col) {
 	uint8_t addr = (row == 0) ? (0x80 + col) : (0xC0 + col);
 	lcd_send_byte(addr, 0);
 }
+
+void ws2812_send_byte(uint8_t byte) {
+	for (uint8_t i = 0; i < 8; i++) {
+		if (byte & 0x80) {
+			__asm__ volatile (
+			"sbi %[port], %[pin] \n\t"
+			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
+			"nop\n\t" "nop\n\t" "nop\n\t"
+			"cbi %[port], %[pin] \n\t"
+			"nop\n\t" "nop\n\t" "nop\n\t"
+			:
+			: [port] "I" (_SFR_IO_ADDR(WS2812_PORT)),
+			[pin] "I" (WS2812_PIN)
+			);
+			} else {
+			__asm__ volatile (
+			"sbi %[port], %[pin] \n\t"
+			"nop\n\t"
+			"cbi %[port], %[pin] \n\t"
+			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
+			"nop\n\t" "nop\n\t"
+			:
+			: [port] "I" (_SFR_IO_ADDR(WS2812_PORT)),
+			[pin] "I" (WS2812_PIN)
+			);
+		}
+		byte <<= 1;
+	}
+}
+
+void actualizar_matriz_ws2812(int8_t target_x, int8_t target_y, uint8_t r, uint8_t g, uint8_t b) {
+	for (int8_t y = 0; y < 8; y++) {
+		for (int8_t x = 0; x < 8; x++) {
+			if (x == target_x && y == target_y) {
+				ws2812_send_byte(g);
+				ws2812_send_byte(r);
+				ws2812_send_byte(b);
+				} else {
+				ws2812_send_byte(0);
+				ws2812_send_byte(0);
+				ws2812_send_byte(0);
+			}
+		}
+	}
+	_delay_us(60);
+}
