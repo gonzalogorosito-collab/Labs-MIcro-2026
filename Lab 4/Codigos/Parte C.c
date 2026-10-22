@@ -97,6 +97,7 @@ int main(void) {
 	USART_Send_String("SISTEMA LISTO\r\n");
 
 	while(1) {
+		// 1. Lectura de la LDR con Histéresis limpia:
 		uint16_t val_ldr = ADC_Read(2);
 		if (val_ldr > 450) {
 			ventana_abierta = 1; 
@@ -104,8 +105,10 @@ int main(void) {
 			ventana_abierta = 0; 
 		}
 		
+		// 2. Lectura del botón de movimiento en Pin 3 (PD3)
 		uint8_t movimiento = ((PIND & (1 << MOVIMIENTO_PIN)) != 0);
 
+		// Lectura de pulsadores locales en Puerto B (flanco de bajada)
 		static uint8_t btn_prev = BTN_MASK;
 		uint8_t btn_now = PINB & BTN_MASK;
 		uint8_t btn_press = btn_prev & ~btn_now;
@@ -115,6 +118,63 @@ int main(void) {
 		if (btn_press & (1 << BTN_SILENCIO)) procesar_comando('S');
 		if (btn_press & (1 << BTN_MODO))     procesar_comando(modo_auto ? 'M' : 'U');
 		if (btn_press & (1 << BTN_FORZAR))   procesar_comando('F');
+
+		// Gestión en Modo Automático
+		if (modo_auto && sistema_armado) {
+			if (movimiento || ventana_abierta) {
+				alarma_activa = 1; 
+			} else {
+				alarma_activa = 0; 
+			}
+		}
+
+		// Acciones según el estado de la alarma
+		if (alarma_activa && sistema_armado) {
+			PORTD &= ~(1 << LED_ARMADO); // Apaga LED verde
+			PORTD |= (1 << LED_ALARMA);  // Enciende LED rojo
+			if (!sirena_silenciada) {
+				PORTD |= (1 << BUZZER);  // Activa sirena en Pin 6
+			}
+			
+			if (movimiento) {
+				if (ultimo_estado_lcd != 2) {
+					twi_lcd_clear();
+					_delay_ms(10);
+					twi_lcd_msg("MOVIM");
+					ultimo_estado_lcd = 2;
+				}
+				USART_Send_String("ALARMA:ON;ZONA:MOVIMIENTO\r\n");
+			} else if (ventana_abierta) {
+				if (ultimo_estado_lcd != 1) {
+					twi_lcd_clear();
+					_delay_ms(10);
+					twi_lcd_msg("VENTANA");
+					ultimo_estado_lcd = 1;
+				}
+				USART_Send_String("ALARMA:ON;ZONA:VENTANA\r\n");
+			}
+		} else {
+			PORTD &= ~((1 << LED_ALARMA) | (1 << BUZZER));
+			sirena_silenciada = 0;
+			
+			if (sistema_armado) {
+				PORTD |= (1 << LED_ARMADO); // Enciende LED verde
+				if (ultimo_estado_lcd != 0) {
+					twi_lcd_clear();
+					_delay_ms(10);
+					twi_lcd_msg("ARMADO");
+					ultimo_estado_lcd = 0;
+				}
+			} else {
+				PORTD &= ~(1 << LED_ARMADO);
+				if (ultimo_estado_lcd != 3) {
+					twi_lcd_clear();
+					_delay_ms(10);
+					twi_lcd_msg("DESARM");
+					ultimo_estado_lcd = 3;
+				}
+			}
+		}
 
 		_delay_ms(50);
 	}
