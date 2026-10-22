@@ -106,7 +106,6 @@ int main(void) {
 		
 		uint8_t movimiento = ((PIND & (1 << MOVIMIENTO_PIN)) != 0);
 
-		// Lectura de pulsadores locales en Puerto B (flanco de bajada)
 		static uint8_t btn_prev = BTN_MASK;
 		uint8_t btn_now = PINB & BTN_MASK;
 		uint8_t btn_press = btn_prev & ~btn_now;
@@ -121,6 +120,65 @@ int main(void) {
 	}
 }
 
+// Interrupción UART para recibir comandos Bluetooth
+ISR(USART_RX_vect) {
+	procesar_comando(UDR0);
+}
+
+// Ejecución de comandos (desde Bluetooth o pulsadores locales)
 void procesar_comando(char recibido) {
-    // Declaración pendiente
+	if (recibido == 'A') {
+		sistema_armado = 1; 
+		alarma_activa = 0;
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("ARMADO");
+		ultimo_estado_lcd = 0;
+		USART_Send_String("CMD:SISTEMA ARMADO\r\n");
+	}
+	else if (recibido == 'D') {
+		sistema_armado = 0; 
+		alarma_activa = 0;
+		sirena_silenciada = 0;
+		PORTD &= ~((1 << LED_ALARMA) | (1 << BUZZER));
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("DESARM");
+		ultimo_estado_lcd = 3;
+		USART_Send_String("CMD:SISTEMA DESARMADO\r\n");
+	}
+	else if (recibido == 'S') {
+		sirena_silenciada = 1; 
+		PORTD &= ~(1 << BUZZER);
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("SILENC");
+		ultimo_estado_lcd = 4;
+		USART_Send_String("CMD:SIRENA SILENCIADA\r\n");
+	}
+	else if (recibido == 'M') {
+		modo_auto = 0; 
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("MANUAL");
+		ultimo_estado_lcd = 5;
+		USART_Send_String("CMD:MODO MANUAL\r\n");
+	}
+	else if (recibido == 'U') {
+		modo_auto = 1; 
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("ARMADO");
+		ultimo_estado_lcd = 0;
+		USART_Send_String("CMD:MODO AUTOMATICO\r\n");
+	}
+	else if (recibido == 'F' && !modo_auto) {
+		alarma_activa = 1; 
+		sirena_silenciada = 0;
+		twi_lcd_clear();
+		_delay_ms(10);
+		twi_lcd_msg("FORZAD");
+		ultimo_estado_lcd = 6;
+		USART_Send_String("CMD:ALARMA FORZADA\r\n");
+	}
 }
