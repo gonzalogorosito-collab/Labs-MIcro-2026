@@ -7,7 +7,6 @@
 #include <math.h>
 
 #define MODO_SIMULACION  0  
-
 #if MODO_SIMULACION
 #define PCF8574_ADDR    (0x23 << 1)
 #else
@@ -86,4 +85,52 @@ uint8_t twi_read_nack_safe(void) {
 		if (--timeout == 0) return 0;
 	}
 	return TWDR;
+}
+
+void lcd_send_nibble(uint8_t nibble, uint8_t rs) {
+	uint8_t data = (nibble & 0xF0) | (rs ? 0x01 : 0x00) | 0x08;
+	if (twi_start_safe()) {
+		twi_write_safe(PCF8574_ADDR);
+		twi_write_safe(data | 0x04);
+		_delay_us(5);
+		twi_write_safe(data & ~0x04);
+		_delay_us(100);
+		twi_stop_safe();
+	}
+}
+
+void lcd_send_byte(uint8_t byte, uint8_t rs) {
+	lcd_send_nibble(byte & 0xF0, rs);
+	lcd_send_nibble((byte << 4) & 0xF0, rs);
+}
+
+void lcd_init(void) {
+	_delay_ms(50);
+	lcd_send_nibble(0x30, 0);
+	_delay_ms(5);
+	lcd_send_nibble(0x30, 0);
+	_delay_us(150);
+	lcd_send_nibble(0x30, 0);
+	_delay_us(150);
+	lcd_send_nibble(0x20, 0);
+	_delay_ms(2);
+	lcd_send_byte(0x28, 0);
+	_delay_us(50);
+	lcd_send_byte(0x0C, 0);
+	_delay_us(50);
+	lcd_send_byte(0x01, 0);
+	_delay_ms(2);
+	lcd_send_byte(0x06, 0);
+	_delay_us(50);
+}
+
+void lcd_print(const char *str) {
+	while (*str) {
+		lcd_send_byte(*str++, 1);
+	}
+}
+
+void lcd_set_cursor(uint8_t row, uint8_t col) {
+	uint8_t addr = (row == 0) ? (0x80 + col) : (0xC0 + col);
+	lcd_send_byte(addr, 0);
 }
