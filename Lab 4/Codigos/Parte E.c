@@ -180,3 +180,46 @@ void actualizar_matriz_ws2812(int8_t target_x, int8_t target_y, uint8_t r, uint8
 	}
 	_delay_us(60);
 }
+
+void mpu6050_init(void) {
+	if (twi_start_safe()) {
+		twi_write_safe(MPU6050_ADDR);
+		twi_write_safe(PWR_MGMT_1);
+		twi_write_safe(0x00);
+		twi_stop_safe();
+	}
+	
+	_delay_ms(50);
+
+	if (twi_start_safe()) {
+		twi_write_safe(MPU6050_ADDR);
+		twi_write_safe(ACCEL_CONFIG);
+		twi_write_safe(0x00);
+		twi_stop_safe();
+	}
+}
+
+void mpu6050_read_accel(int16_t *ax, int16_t *ay, int16_t *az) {
+	if (twi_start_safe()) {
+		twi_write_safe(MPU6050_ADDR);
+		twi_write_safe(ACCEL_XOUT_H);
+		twi_stop_safe();
+
+		if (twi_start_safe()) {
+			twi_write_safe(MPU6050_ADDR | 1);
+			uint8_t xh = twi_read_ack_safe();
+			uint8_t xl = twi_read_ack_safe();
+			uint8_t yh = twi_read_ack_safe();
+			uint8_t yl = twi_read_ack_safe();
+			uint8_t zh = twi_read_ack_safe();
+			uint8_t zl = twi_read_nack_safe();
+			twi_stop_safe();
+
+			*ax = (int16_t)((xh << 8) | xl);
+			*ay = (int16_t)((yh << 8) | yl);
+			*az = (int16_t)((zh << 8) | zl);
+			return;
+		}
+	}
+	*ax = 0; *ay = 0; *az = 16384;
+}
