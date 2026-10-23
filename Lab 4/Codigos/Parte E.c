@@ -240,9 +240,98 @@ int main(void) {
 	offset_x = eeprom_read_word((uint16_t*)EEPROM_OFFSET_X);
 	offset_y = eeprom_read_word((uint16_t*)EEPROM_OFFSET_Y);
 
+	int16_t ax, ay, az;
+	int8_t x_led = 4, y_led = 4;
+	char buffer_lcd[17];
+
 	lcd_set_cursor(0, 0);
 	lcd_print("Burbuja MPU6050");
 	_delay_ms(1000);
 	lcd_send_byte(0x01, 0);
 	_delay_ms(2);
+
+	while (1) {
+		if (!(BUTTON_PIN & (1 << PIN_HOLD))) {
+			_delay_ms(50);
+			if (!(BUTTON_PIN & (1 << PIN_HOLD))) {
+				hold_mode = !hold_mode;
+				while (!(BUTTON_PIN & (1 << PIN_HOLD)));
+			}
+		}
+
+		if (!(BUTTON_PIN & (1 << PIN_CALIB))) {
+			_delay_ms(50);
+			if (!(BUTTON_PIN & (1 << PIN_CALIB))) {
+				mpu6050_read_accel(&ax, &ay, &az);
+				offset_x = ax;
+				offset_y = ay;
+				eeprom_update_word((uint16_t*)EEPROM_OFFSET_X, offset_x);
+				eeprom_update_word((uint16_t*)EEPROM_OFFSET_Y, offset_y);
+				
+				lcd_send_byte(0x01, 0);
+				_delay_ms(2);
+				lcd_set_cursor(0, 0);
+				lcd_print("Calibrado!");
+				_delay_ms(800);
+				while (!(BUTTON_PIN & (1 << PIN_CALIB)));
+			}
+		}
+
+		if (!hold_mode) {
+			mpu6050_read_accel(&ax, &ay, &az);
+			ax -= offset_x;
+			ay -= offset_y;
+
+			float pitch = atan2((float)ay, (float)az) * 180.0 / M_PI;
+			float roll  = atan2((float)ax, (float)az) * 180.0 / M_PI;
+
+			if (fabs(pitch) < 3.0) pitch = 0.0;
+			if (fabs(roll) < 3.0)  roll = 0.0;
+
+			int map_x = 4 + (int)(roll / 10.0);
+			int map_y = 4 + (int)(pitch / 10.0);
+
+			if (map_x < 0) map_x = 0;
+			if (map_x > 7) map_x = 7;
+			if (map_y < 0) map_y = 0;
+			if (map_y > 7) map_y = 7;
+
+			x_led = map_x;
+			y_led = map_y;
+
+			uint8_t r = 0, g = 0, b = 0;
+			if (fabs(pitch) < 3.0 && fabs(roll) < 3.0) {
+				b = 255;
+				} else if (fabs(pitch) > fabs(roll) + 2.0) {
+				r = 255;
+				} else if (fabs(roll) > fabs(pitch) + 2.0) {
+				g = 255;
+				} else {
+				r = 255; g = 255;
+			}
+
+			if (x_led == 0 || x_led == 7 || y_led == 0 || y_led == 7) {
+				BUZZER_PORT |= (1 << BUZZER_PIN);
+				} else {
+				BUZZER_PORT &= ~(1 << BUZZER_PIN);
+			}
+
+			actualizar_matriz_ws2812(x_led, y_led, r, g, b);
+
+			lcd_set_cursor(0, 0);
+			sprintf(buffer_lcd, "P:%+3.0f R:%+3.0f", pitch, roll);
+			lcd_print(buffer_lcd);
+
+			lcd_set_cursor(1, 0);
+			sprintf(buffer_lcd, "X:%d Y:%d HOLD:OFF", x_led, y_led);
+			lcd_print(buffer_lcd);
+			} else {
+			lcd_set_cursor(1, 0);
+			sprintf(buffer_lcd, "X:%d Y:%d HOLD:ON ", x_led, y_led);
+			lcd_print(buffer_lcd);
+			BUZZER_PORT &= ~(1 << BUZZER_PIN);
+		}
+
+		_delay_ms(80);
+	}
 }
