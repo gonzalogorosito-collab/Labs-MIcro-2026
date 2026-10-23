@@ -223,3 +223,26 @@ void mpu6050_read_accel(int16_t *ax, int16_t *ay, int16_t *az) {
 	}
 	*ax = 0; *ay = 0; *az = 16384;
 }
+
+int main(void) {
+	_delay_ms(2000);
+
+	BUTTON_DDR &= ~((1 << PIN_HOLD) | (1 << PIN_CALIB));
+	BUTTON_PORT |= (1 << PIN_HOLD) | (1 << PIN_CALIB);
+
+	BUZZER_DDR |= (1 << BUZZER_PIN);
+	WS2812_DDR |= (1 << WS2812_PIN);
+
+	twi_init_safe();
+	lcd_init();
+	mpu6050_init();
+
+	offset_x = eeprom_read_word((uint16_t*)EEPROM_OFFSET_X);
+	offset_y = eeprom_read_word((uint16_t*)EEPROM_OFFSET_Y);
+
+	lcd_set_cursor(0, 0);
+	lcd_print("Burbuja MPU6050");
+	_delay_ms(1000);
+	lcd_send_byte(0x01, 0);
+	_delay_ms(2);
+}
