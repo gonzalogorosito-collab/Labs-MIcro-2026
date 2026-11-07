@@ -168,19 +168,50 @@ static void tareas_activar(uint8_t led, uint8_t lcd, uint8_t dht)  // Prende (1)
 }                                            // Fin de tareas_activar
 
 //==========================================================
-// Eventos (pulsaciones)
+// Qué se hace al entrar en cada estado
 //==========================================================
-static void eventos_capturar(void)           // Pasa los avisos de las interrupciones al programa principal
+static void entrar_activo(void)              // Al entrar en ACTIVO
 {
-	ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {      // Bloque protegido: ninguna interrupción puede cambiar los datos mientras se copian
-		ev_boton = isr_boton;                // Copia el aviso del pulsador
-		ev_emerg = isr_emerg;                // Copia el aviso de emergencia
-		isr_boton = 0;                       // Borra el aviso del pulsador para no contarlo dos veces
-		isr_emerg = 0;                       // Borra el aviso de emergencia para no contarlo dos veces
-	}                                        // Fin del bloque protegido
+	luz_apagar_pendiente = 0;                // Cancela el apagado de la luz si todavía no se había hecho
+	lcd_nb_backlight(1);                     // Enciende la luz de la pantalla (por si venía de APAGADO)
+	adc_habilitar(1);                        // Vuelve a activar las lecturas del ADC
+	ultima_actividad = millis();             // Reinicia el contador de inactividad
+	tareas_activar(1, 1, 1);                 // Activa las tres tareas: LED, pantalla y sensor
+	tarea_lcd();                             // Dibuja la pantalla ahora mismo, sin esperar los 500 ms
+}                                            // Fin de entrar_activo
 
-	if (ev_boton) {                          // Si se apretó el pulsador (esto cuenta como actividad del usuario)
-		ultima_actividad = millis();         // Reinicia el contador de inactividad
-		buzzer_encender();                   // Hace sonar el buzzer
-	}                                        // Fin del tratamiento del pulsador
-}                                            // Fin de eventos_capturar
+static void entrar_standby(void)             // Al entrar en STANDBY
+{
+	PORTB &= ~(1 << LED_BIT);                // Apaga el LED
+	tareas_activar(0, 0, 0);                 // Desactiva las tres tareas
+	lcd_nb_linea(0, "Esperando...");         // Muestra el mensaje que pide la letra
+	lcd_nb_linea(1, "");                     // Deja la fila de abajo en blanco
+}                                            // Fin de entrar_standby
+
+static void entrar_apagado(void)             // Al entrar en APAGADO
+{
+	PORTB &= ~(1 << LED_BIT);                // Apaga el LED
+	tareas_activar(0, 0, 0);                 // Desactiva las tres tareas
+	adc_habilitar(0);                        // Deja de pedir lecturas al ADC
+	lcd_nb_linea(0, "APAGADO");              // Escribe "APAGADO" en la fila de arriba
+	lcd_nb_linea(1, "");                     // Deja la fila de abajo en blanco
+	luz_apagar_pendiente = 1;                // Anota que hay que apagar la luz cuando la pantalla termine de escribir
+}                                            // Fin de entrar_apagado
+
+static void entrar_seguro(void)              // Al entrar en ESTADO SEGURO
+{
+	PORTB &= ~(1 << LED_BIT);                // Apaga el LED
+	buzzer_apagar();                         // Apaga el buzzer
+	luz_apagar_pendiente = 0;                // Cancela el apagado de la luz si todavía no se había hecho
+	tareas_activar(0, 0, 0);                 // Desactiva las tres tareas
+	lcd_nb_backlight(1);                     // Enciende la luz de la pantalla para que se vea el aviso
+	lcd_nb_linea(0, "ESTADO SEGURO");        // Muestra el aviso en la fila de arriba
+	lcd_nb_linea(1, "Pulse p/ rearmar");     // Muestra cómo salir ("p/" quiere decir "para")
+}                                            // Fin de entrar_seguro
+
+static void (*const entrada[N_ESTADOS])(void) = {  // Tabla: a cada estado le corresponde su función de entrada
+	[E_ACTIVO]  = entrar_activo,             // Al entrar en ACTIVO se ejecuta entrar_activo
+	[E_STANDBY] = entrar_standby,            // Al entrar en STANDBY se ejecuta entrar_standby
+	[E_APAGADO] = entrar_apagado,            // Al entrar en APAGADO se ejecuta entrar_apagado
+	[E_SEGURO]  = entrar_seguro,             // Al entrar en ESTADO SEGURO se ejecuta entrar_seguro
+};                                           // Fin de la tabla de entradas
