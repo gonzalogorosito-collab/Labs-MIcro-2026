@@ -67,3 +67,75 @@ static uint8_t  beep_activo = 0;             // 1 si el buzzer está sonando
 static uint32_t beep_fin = 0;                // Momento en que el buzzer debe dejar de sonar
 
 static uint8_t  luz_apagar_pendiente = 0;    // 1 = falta apagar la luz de la pantalla cuando termine de escribirse "APAGADO"
+
+//==========================================================
+// Interrupciones de los pulsadores (solo avisan que pasó algo)
+//==========================================================
+ISR(INT0_vect)                               // Se ejecuta sola cuando se aprieta el pulsador de D2
+{
+	uint32_t ahora = millis();               // Guarda la hora actual
+	if ((uint32_t)(ahora - t_boton) >= T_REBOTE_MS) {  // Si pasaron al menos 50 ms desde la pulsación anterior...
+		isr_boton = 1;                       // ...avisa al programa principal que hubo una pulsación
+		t_boton = ahora;                     // ...y guarda la hora de esta pulsación
+	}                                        // Fin del filtro de rebote
+}                                            // Fin de la interrupción INT0
+
+ISR(INT1_vect)                               // Se ejecuta sola cuando se aprieta el pulsador de D3 (emergencia)
+{
+	uint32_t ahora = millis();               // Guarda la hora actual
+	if ((uint32_t)(ahora - t_emerg) >= T_REBOTE_MS) {  // Si pasaron al menos 50 ms desde la pulsación anterior...
+		isr_emerg = 1;                       // ...avisa al programa principal que hubo una emergencia
+		t_emerg = ahora;                     // ...y guarda la hora de esta pulsación
+	}                                        // Fin del filtro de rebote
+}                                            // Fin de la interrupción INT1
+
+//==========================================================
+// Buzzer (suena un rato y se apaga solo, sin frenar el programa)
+//==========================================================
+static void buzzer_encender(void)            // Hace sonar el buzzer
+{
+	PORTB |= (1 << BUZZER_BIT);              // Pone el pin del buzzer en 1 (empieza a sonar)
+	beep_fin = millis() + T_BEEP_MS;         // Calcula cuándo tiene que dejar de sonar
+	beep_activo = 1;                         // Anota que el buzzer está sonando
+}                                            // Fin de buzzer_encender
+
+static void buzzer_apagar(void)              // Corta el sonido del buzzer
+{
+	PORTB &= ~(1 << BUZZER_BIT);             // Pone el pin del buzzer en 0 (deja de sonar)
+	beep_activo = 0;                         // Anota que el buzzer ya no suena
+}                                            // Fin de buzzer_apagar
+
+static void buzzer_tarea(void)               // Se llama en cada vuelta del programa
+{
+	if (beep_activo && (int32_t)(millis() - beep_fin) >= 0)  // Si está sonando y ya pasó su tiempo...
+	buzzer_apagar();                         // ...lo apaga
+}                                            // Fin de buzzer_tarea
+
+//==========================================================
+// Luz de la pantalla (se apaga recién cuando terminó de escribirse "APAGADO")
+//==========================================================
+static void luz_tarea(void)                  // Se llama en cada vuelta del programa
+{
+	if (luz_apagar_pendiente && !lcd_nb_ocupado()) {  // Si hay que apagar la luz y la pantalla ya terminó de escribir...
+		lcd_nb_backlight(0);                 // ...apaga la luz de la pantalla y deja de usar el bus I2C
+		luz_apagar_pendiente = 0;            // Ya no queda nada pendiente
+	}                                        // Fin de la revisión
+}                                            // Fin de luz_tarea
+
+//==========================================================
+// Eventos (pulsaciones)
+//==========================================================
+static void eventos_capturar(void)           // Pasa los avisos de las interrupciones al programa principal
+{
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {      // Bloque protegido: ninguna interrupción puede cambiar los datos mientras se copian
+		ev_boton = isr_boton;                // Copia el aviso del pulsador
+		ev_emerg = isr_emerg;                // Copia el aviso de emergencia
+		isr_boton = 0;                       // Borra el aviso del pulsador para no contarlo dos veces
+		isr_emerg = 0;                       // Borra el aviso de emergencia para no contarlo dos veces
+	}                                        // Fin del bloque protegido
+
+	if (ev_boton) {                          // Si se apretó el pulsador (esto cuenta como actividad del usuario)
+		ultima_actividad = millis();         // Reinicia el contador de inactividad
+		buzzer_encender();                   // Hace sonar el buzzer
+	}                                        // Fin del tratamiento del pulsador
+}                                            // Fin de eventos_capturar
