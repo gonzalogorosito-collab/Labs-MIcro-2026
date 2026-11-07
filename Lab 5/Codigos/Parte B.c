@@ -1,7 +1,10 @@
 // Conexiones:
 //   D2 (INT0) pulsador a GND (hace sonar el buzzer)
+//   D4 DATA del DHT11
 //   D9 buzzer activo (actuador 2)
 //   D13 LED: parpadea cada 200 ms (actuador 1)
+//   A2 potenciómetro o sensor analógico (ADC2)
+//   A4 (SDA) y A5 (SCL) a la LCD I2C
 //==========================================================
 
 #define F_CPU 16000000UL                 
@@ -10,6 +13,8 @@
 #include <avr/interrupt.h>               // Macro ISR() y funciones sei()/cli()
 #include <stdint.h>                      // Tipos enteros de tamaño fijo (uint8_t, uint16_t, uint32_t)
 #include "tiempo.h"                      // millis(), ADC periódico y planificador de tareas
+#include "lcd_nb.h"                      // LCD 16x2 I2C sin bloqueo
+#include "dht11_nb.h"                    // Sensor DHT11 sin bloqueo
 
 //==========================================================
 // Configuración
@@ -32,6 +37,7 @@ static uint8_t  led = 1;                 // Actuador 1: 1 = el LED parpadea (por
 static uint8_t  beep_activo = 0;         // 1 = el buzzer está sonando por el beep del pulsador
 static uint32_t beep_fin = 0;            // Instante (ms) en que termina el beep
 static uint8_t  buzzer = 0;              // Estado deseado del buzzer (actuador 2)
+static uint8_t  temperatura = 0;         // Última temperatura válida del DHT11 (°C)
 
 //==========================================================
 // Interrupción externa INT0 (pulsador local)
@@ -59,8 +65,23 @@ static void tarea_led(void)              // Cada 200 ms: hace parpadear el LED (
 	else PORTB &= ~(1 << LED_ACT);       // Si no, lo deja apagado
 }                                        // Fin de tarea_led
 
+static void tarea_dht(void)              // Cada 2 s: pide una lectura al DHT11
+{
+	dht_iniciar_lectura();               // Baja la línea y vuelve enseguida (no bloquea)
+}                                        // Fin de tarea_dht
+
+static void tarea_lcd(void)              // Cada 500 ms: actualiza el buffer de la LCD
+{
+	lcd_nb_linea(0, "Sensores");      // Fila 0: título
+	lcd_nb_linea(1, "ADC      T   C"); // Fila 1: plantilla con las etiquetas (solo ADC y temperatura)
+	lcd_nb_numero(1, 4, adc_ultimo(), 4);        // Valor del ADC (columnas 4 a 7)
+	lcd_nb_numero(1, 11, temperatura, 2);        // Temperatura (columnas 11 y 12)
+}                                        // Fin de tarea_lcd
+
 //===== Tabla de tareas: { período en ms, último instante, función, activa } =====
 static tarea_t tareas[] = {
+	{ 2000, 0, tarea_dht,     1 },       // T_DHT: cada 2 s (el DHT11 pide al menos 1 s entre lecturas)
+	{ 500,  0, tarea_lcd,     1 },       // T_LCD: cada 500 ms (no en cada vuelta, para no refrescar sin parar)
 	{ T_LED_MS, 0, tarea_led, 1 },       // T_LED: cada 200 ms (parpadeo del LED)
 };
 #define N_TAREAS (sizeof(tareas) / sizeof(tareas[0]))   // Cantidad de tareas de la tabla
@@ -98,12 +119,23 @@ int main(void)                           // Punto de entrada
 	EIMSK |= (1 << INT0);                // Habilita INT0
 
 	tiempo_init();                       // Timer0 (1 ms), Timer1 (100 ms) y ADC
+	ADCSRA |= (1 << ADEN);               // Enciende el ADC
+	adc_habilitar(1);                    // Timer1 pide las conversiones del ADC
+	dht_init();                          // Configura Timer2 y el pin del sensor
 	sei();                               // Habilita las interrupciones globales
+	lcd_nb_init();                       // Inicia la LCD (bloquea ~1 s)
 	t_ultimo_int0 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D2
 
 	for (;;) {                           // Lazo principal
 		atender_int0();                  // Procesa el pulsador D2
 		beep_tarea();                    // Termina el beep del buzzer cuando corresponde
+		if (dht_tarea()) {               // Si terminó una lectura del DHT11...
+			uint8_t t, h;                // Valores leídos (la humedad no se usa en este sistema)
+			if (dht_resultado(&t, &h) == DHT_OK) {   // ...y fue correcta...
+				temperatura = t;         // ...se guarda la temperatura
+			}                            // Fin de la lectura correcta
+		}                                // Fin de la atención del DHT11
 		planificador_ejecutar(tareas, N_TAREAS);     // Ejecuta las tareas periódicas vencidas
+		lcd_nb_tarea();                  // Envía a la LCD unos pocos caracteres pendientes
 	}                                    // Fin del lazo principal
 }                                        // Fin de main
