@@ -123,6 +123,51 @@ static void luz_tarea(void)                  // Se llama en cada vuelta del prog
 }                                            // Fin de luz_tarea
 
 //==========================================================
+// Tareas periódicas (cortas y sin esperas)
+//==========================================================
+static void tarea_led(void)                  // Se ejecuta cada 200 ms
+{
+	PORTB ^= (1 << LED_BIT);                 // Invierte el LED: si estaba prendido lo apaga y al revés
+}                                            // Fin de tarea_led
+
+static void tarea_dht(void)                  // Se ejecuta cada 2 s
+{
+	dht_iniciar_lectura();                   // Le pide una medición al sensor (la termina dht_tarea() en el lazo principal)
+}                                            // Fin de tarea_dht
+
+static void tarea_lcd(void)                  // Se ejecuta cada 500 ms (solo en ACTIVO)
+{
+	uint8_t t, h;                            // Variables para temperatura (t) y humedad (h)
+	uint8_t cod = dht_resultado(&t, &h);     // Pide los últimos valores del sensor y si la lectura salió bien
+
+	lcd_nb_linea(0, "ACTIVO  T:   C");        // Fila de arriba: texto fijo con temperatura
+	lcd_nb_numero(0, 10, t, 2);              // Escribe la temperatura en la columna 10 (2 dígitos)
+	if (cod != DHT_OK) lcd_nb_texto(0, 15, "!");  // Si el sensor falló, muestra un "!" al final de la fila
+	lcd_nb_linea(1, "ADC:    ");            // Fila de abajo: solo muestra el valor del ADC
+	lcd_nb_numero(1, 4, adc_ultimo(), 4);    // Escribe el último valor del ADC (0 a 1023) en la columna 4
+}                                            // Fin de tarea_lcd
+
+//===== Tabla de tareas del planificador =====
+#define T_LED   0                            // Posición de la tarea del LED en la tabla
+#define T_LCD   1                            // Posición de la tarea de la pantalla en la tabla
+#define T_DHT   2                            // Posición de la tarea del sensor en la tabla
+
+static tarea_t tareas[] = {                  // Cada fila: { cada cuántos ms, última vez, función, activa (1) o no (0) }
+{ T_LED_MS, 0, tarea_led, 1 },           // El LED cambia cada 200 ms
+{ T_LCD_MS, 0, tarea_lcd, 1 },           // La pantalla se actualiza cada 500 ms
+{ T_DHT_MS, 0, tarea_dht, 1 },           // El sensor se lee cada 2 s
+};                                           // Fin de la tabla de tareas
+#define N_TAREAS (sizeof(tareas) / sizeof(tareas[0]))  // Cantidad de tareas que hay en la tabla
+
+static void tareas_activar(uint8_t led, uint8_t lcd, uint8_t dht)  // Prende (1) o apaga (0) cada tarea
+{
+	tareas[T_LED].activa = led;              // 1 = el LED parpadea, 0 = no
+	tareas[T_LCD].activa = lcd;              // 1 = se actualiza la pantalla, 0 = no
+	tareas[T_DHT].activa = dht;              // 1 = se lee el sensor, 0 = no
+	planificador_reiniciar(tareas, N_TAREAS);// Todas las tareas empiezan a contar su tiempo desde este momento
+}                                            // Fin de tareas_activar
+
+//==========================================================
 // Eventos (pulsaciones)
 //==========================================================
 static void eventos_capturar(void)           // Pasa los avisos de las interrupciones al programa principal
