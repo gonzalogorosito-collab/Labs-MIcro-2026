@@ -215,3 +215,51 @@ static void (*const entrada[N_ESTADOS])(void) = {  // Tabla: a cada estado le co
 	[E_APAGADO] = entrar_apagado,            // Al entrar en APAGADO se ejecuta entrar_apagado
 	[E_SEGURO]  = entrar_seguro,             // Al entrar en ESTADO SEGURO se ejecuta entrar_seguro
 };                                           // Fin de la tabla de entradas
+
+//==========================================================
+// Condiciones para cambiar de estado
+//==========================================================
+static uint8_t cond_emergencia(void)         // ¿Hubo una emergencia?
+{
+	return ev_emerg && (estado_actual != E_SEGURO);  // Sí, si se apretó emergencia y todavía no está en estado seguro
+}                                            // Fin de cond_emergencia
+
+static uint8_t cond_boton(void)              // ¿Se apretó el pulsador?
+{
+	return ev_boton;                         // Devuelve 1 si hubo una pulsación en esta vuelta
+}                                            // Fin de cond_boton
+
+static uint8_t cond_inactividad_10s(void)    // ¿Pasaron 10 s sin actividad?
+{
+	return (uint32_t)(millis() - ultima_actividad) >= T_STANDBY_MS;  // Compara el tiempo desde la última actividad con 10 s
+}                                            // Fin de cond_inactividad_10s
+
+static uint8_t cond_inactividad_30s(void)    // ¿Pasaron 30 s sin actividad? (se cuentan desde la última actividad, no desde STANDBY)
+{
+	return (uint32_t)(millis() - ultima_actividad) >= T_APAGADO_MS;  // Compara el tiempo desde la última actividad con 30 s
+}                                            // Fin de cond_inactividad_30s
+
+//==========================================================
+// Tabla de transiciones (se usa la primera fila que se cumple)
+//==========================================================
+static const transicion_t tabla[] = {        // Cada fila: { desde qué estado, condición, a qué estado }
+{ CUALQUIERA, cond_emergencia,      E_SEGURO  },  // Desde cualquier estado -> SEGURO si hay emergencia
+{ E_ACTIVO,   cond_inactividad_10s, E_STANDBY },  // ACTIVO  -> STANDBY si pasan 10 s sin actividad
+{ E_STANDBY,  cond_boton,           E_ACTIVO  },  // STANDBY -> ACTIVO si se aprieta el pulsador
+{ E_STANDBY,  cond_inactividad_30s, E_APAGADO },  // STANDBY -> APAGADO si pasan 30 s sin actividad
+{ E_APAGADO,  cond_boton,           E_ACTIVO  },  // APAGADO -> ACTIVO si se aprieta el pulsador
+{ E_SEGURO,   cond_boton,           E_ACTIVO  },  // SEGURO  -> ACTIVO si se aprieta el pulsador (rearme)
+};                                           // Fin de la tabla de transiciones
+#define N_TRANS (sizeof(tabla) / sizeof(tabla[0]))  // Cantidad de filas de la tabla
+
+static void fsm_ejecutar(void)               // Revisa la tabla y cambia de estado si corresponde
+{
+	for (uint8_t i = 0; i < N_TRANS; i++) {  // Prueba una por una las filas de la tabla
+		if ((tabla[i].origen == CUALQUIERA || tabla[i].origen == estado_actual)  // Si la fila sirve para el estado actual...
+		&& tabla[i].condicion()) {           // ...y además su condición se cumple
+			estado_actual = tabla[i].destino;    // Cambia al nuevo estado
+			entrada[estado_actual]();        // Ejecuta lo que corresponde al entrar en ese estado
+			break;                           // Sale: solo se hace un cambio de estado por vuelta
+		}                                    // Fin de la fila que se cumplió
+	}                                        // Fin de la revisión de la tabla
+}                                            // Fin de fsm_ejecutar
