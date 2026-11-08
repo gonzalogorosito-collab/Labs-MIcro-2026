@@ -3,8 +3,12 @@
 //   D1 (TX) -> RXD del HC-05 (con divisor de 1k/2k, el HC-05 es de 3,3 V)
 //   D2 (INT0) pulsador a GND (hace sonar el buzzer)
 //   D4 DATA del DHT11
+//   D4 DATA del DHT11
 //   D9 buzzer activo (actuador 2)
 //   D13 LED: parpadea cada 200 ms (actuador 1: la aplicación activa o desactiva el parpadeo)
+//   A2 potenciómetro o sensor analógico (ADC2)
+//   A4 (SDA) y A5 (SCL) a la LCD I2C
+//   D13 LED: parpadea cada 200 ms (actuador 1)
 //   A2 potenciómetro o sensor analógico (ADC2)
 //   A4 (SDA) y A5 (SCL) a la LCD I2C
 //==========================================================
@@ -18,6 +22,8 @@
 #include "tiempo.h"                      // millis(), ADC periódico y planificador de tareas
 #include "uart_rb.h"                     // USART por interrupciones con buffers circulares
 #include "trama.h"                       // Protocolo de tramas para el Bluetooth
+#include "lcd_nb.h"                      // LCD 16x2 I2C sin bloqueo
+#include "dht11_nb.h"                    // Sensor DHT11 sin bloqueo
 #include "lcd_nb.h"                      // LCD 16x2 I2C sin bloqueo
 #include "dht11_nb.h"                    // Sensor DHT11 sin bloqueo
 
@@ -53,6 +59,7 @@ static uint8_t  alarma_temp_activa = 0;  // 1 = la alarma de temperatura ya fue 
 
 //===== Tipo de función de comando, para la tabla =====
 typedef void (*cmd_t)(uint16_t);         // Puntero a función de comando: recibe el DATO de la trama
+static uint8_t  temperatura = 0;         // Última temperatura válida del DHT11 (°C)
 
 //==========================================================
 // Interrupción externa INT0 (pulsador local)
@@ -122,10 +129,25 @@ static void tarea_lcd(void)              // Cada 500 ms: actualiza el buffer de 
 	lcd_nb_numero(1, 11, temperatura, 2);        // Temperatura (columnas 11 y 12)
 }                                        // Fin de tarea_lcd
 
+static void tarea_dht(void)              // Cada 2 s: pide una lectura al DHT11
+{
+	dht_iniciar_lectura();               // Baja la línea y vuelve enseguida (no bloquea)
+}                                        // Fin de tarea_dht
+
+static void tarea_lcd(void)              // Cada 500 ms: actualiza el buffer de la LCD
+{
+	lcd_nb_linea(0, "Sensores");      // Fila 0: título
+	lcd_nb_linea(1, "ADC      T   C"); // Fila 1: plantilla con las etiquetas (solo ADC y temperatura)
+	lcd_nb_numero(1, 4, adc_ultimo(), 4);        // Valor del ADC (columnas 4 a 7)
+	lcd_nb_numero(1, 11, temperatura, 2);        // Temperatura (columnas 11 y 12)
+}                                        // Fin de tarea_lcd
+
 //===== Tabla de tareas: { período en ms, último instante, función, activa } =====
 static tarea_t tareas[] = {
 	{ 2000, 0, tarea_dht,     1 },       // T_DHT: cada 2 s (el DHT11 pide al menos 1 s entre lecturas)
 	{ 500,  0, tarea_sensores, 1 },      // T_SENSORES: cada 500 ms
+	{ 500,  0, tarea_lcd,     1 },       // T_LCD: cada 500 ms (no en cada vuelta, para no refrescar sin parar)
+	{ 2000, 0, tarea_dht,     1 },       // T_DHT: cada 2 s (el DHT11 pide al menos 1 s entre lecturas)
 	{ 500,  0, tarea_lcd,     1 },       // T_LCD: cada 500 ms (no en cada vuelta, para no refrescar sin parar)
 	{ T_LED_MS, 0, tarea_led, 1 },       // T_LED: cada 200 ms (parpadeo del LED)
 };
@@ -226,7 +248,11 @@ int main(void)                           // Punto de entrada
 	adc_habilitar(1);                    // Timer1 pide las conversiones del ADC
 	dht_init();                          // Configura Timer2 y el pin del sensor
 	uart_init(UART_UBRR(9600));          // USART a 9600 bps, 8N1, con interrupciones y buffers circulares
+	ADCSRA |= (1 << ADEN);               // Enciende el ADC
+	adc_habilitar(1);                    // Timer1 pide las conversiones del ADC
+	dht_init();                          // Configura Timer2 y el pin del sensor
 	sei();                               // Habilita las interrupciones globales
+	lcd_nb_init();                       // Inicia la LCD (bloquea ~1 s)
 	lcd_nb_init();                       // Inicia la LCD (bloquea ~1 s)
 	t_ultimo_int0 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D2
 
@@ -240,7 +266,14 @@ int main(void)                           // Punto de entrada
 				temperatura = t;         // ...se guarda la temperatura
 			}                            // Fin de la lectura correcta
 		}                                // Fin de la atención del DHT11
+		if (dht_tarea()) {               // Si terminó una lectura del DHT11...
+			uint8_t t, h;                // Valores leídos (la humedad no se usa en este sistema)
+			if (dht_resultado(&t, &h) == DHT_OK) {   // ...y fue correcta...
+				temperatura = t;         // ...se guarda la temperatura
+			}                            // Fin de la lectura correcta
+		}                                // Fin de la atención del DHT11
 		planificador_ejecutar(tareas, N_TAREAS);     // Ejecuta las tareas periódicas vencidas
+		lcd_nb_tarea();                  // Envía a la LCD unos pocos caracteres pendientes
 		lcd_nb_tarea();                  // Envía a la LCD unos pocos caracteres pendientes
 	}                                    // Fin del lazo principal
 }                                        // Fin de main
