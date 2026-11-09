@@ -1,7 +1,8 @@
 // Conexiones:
 //   D0 (RX) <- TXD del HC-05
 //   D1 (TX) -> RXD del HC-05 (con divisor de 1k/2k, el HC-05 es de 3,3 V)
-//   D2 (INT0) pulsador a GND (despierta y hace sonar el buzzer)
+//   D2 (INT0) pulsador a GND (despierta, hace sonar el buzzer y sirve para el rearme local)
+//   D3 (INT1) pulsador de emergencia a GND (desde cualquier estado pasa al estado seguro)
 //   D4 DATA del DHT11
 //   D9 buzzer activo (actuador 2)
 //   D8 pin de prueba (osciloscopio): pulso en cada despertar del WDT (Prueba A)
@@ -29,32 +30,38 @@
 #define T_STANDBY_MS    10000UL          // Inactividad para pasar de ACTIVO a STANDBY: 10 s
 #define T_APAGADO_MS    30000UL          // Inactividad (desde el último evento válido) para pasar a APAGADO: 30 s
 #define TEMP_ALARMA     35               // Temperatura (°C) a partir de la cual se registra una alarma
+#define BOTON_LARGO_MUESTRAS 50          // 50 muestras de 20 ms = 1 s para considerar pulsación larga
 #define T_LED_MS        200              // El LED cambia de estado cada 200 ms (Problema A)
 #define T_BEEP_MS       150UL            // Duración del beep del buzzer al apretar el pulsador (Problema A)
-#define ANTIREBOTE_MS   300UL            // Tiempo en que se ignoran nuevos flancos de INT0 (rebotes del pulsador)
+#define ANTIREBOTE_MS   300UL            // Tiempo en que se ignoran nuevos flancos de INT0 e INT1 (rebotes de los pulsadores)
 
 //===== Pines (todos en PORTB salvo los pulsadores en PORTD) =====
 #define LED_ACT   PB5                    // D13: LED actuador 1
 #define BUZZER    PB1                    // D9: buzzer actuador 2
 #define LED_WDT   PB0                    // D8: pin de prueba para el osciloscopio (pulso en cada despertar del WDT)
 #define BOTON     PD2                    // D2: pulsador local (INT0)
+#define EMERG     PD3                    // D3: pulsador de emergencia (INT1)
 
 //===== Estados =====
 #define E_ACTIVO   0                     // Estado ACTIVO: todo funcionando
 #define E_STANDBY  1                     // Estado STANDBY: Idle entre tareas
 #define E_APAGADO  2                     // Estado APAGADO: Power-Down
-#define N_ESTADOS  3                     // Cantidad de estados
+#define E_SEGURO   3                     // Estado seguro (emergencia)
+#define N_ESTADOS  4                     // Cantidad de estados
 
 //===== Códigos de evento (byte alto del DATO de RESP_EVENTO; el byte bajo es un valor) =====
 #define EV_TEMP_ALTA     1               // Alarma: temperatura sobre el límite (valor = °C)
+#define EV_EMERG_APP     2               // Alarma: emergencia pedida desde la aplicación
+#define EV_EMERG_LOCAL   3               // Alarma: emergencia pedida con el pulsador local
 #define EV_WDT_DESPERTAR 5               // Informativo: despertar por WDT (valor = número de evento)
 #define EV_CAMBIO_ESTADO 6               // Informativo: cambio de estado (valor = estado nuevo)
 
 //===== Índices de la tabla de tareas =====
-#define T_DHT       0                    // Tarea que inicia la lectura del DHT11
-#define T_SENSORES  1                    // Tarea que toma el ADC y controla las alarmas
-#define T_LCD       2                    // Tarea que actualiza el texto de la LCD
-#define T_LED       3                    // Tarea que hace parpadear el LED cada 200 ms
+#define T_BOTON     0                    // Tarea que mide la pulsación larga
+#define T_DHT       1                    // Tarea que inicia la lectura del DHT11
+#define T_SENSORES  2                    // Tarea que toma el ADC y controla las alarmas
+#define T_LCD       3                    // Tarea que actualiza el texto de la LCD
+#define T_LED       4                    // Tarea que hace parpadear el LED cada 200 ms
 
 //==========================================================
 // Variables globales
@@ -62,7 +69,9 @@
 static uint8_t  estado = E_ACTIVO;       // Estado actual de la máquina de estados
 static uint32_t t_actividad = 0;         // Instante (ms) del último evento válido (pulsador o trama válida)
 static uint32_t t_ultimo_int0 = 0;       // Instante del último flanco de INT0 aceptado (antirrebote)
+static uint32_t t_ultimo_int1 = 0;       // Instante del último flanco de INT1 aceptado (antirrebote)
 static volatile uint8_t flag_int0 = 0;   // La ISR de INT0 lo pone en 1; el lazo principal lo atiende
+static volatile uint8_t flag_int1 = 0;   // La ISR de INT1 lo pone en 1; el lazo principal lo atiende
 static uint8_t  led = 1;                 // Actuador 1: 1 = el LED parpadea en ACTIVO (por defecto), 0 = LED apagado
 static uint8_t  beep_activo = 0;         // 1 = el buzzer está sonando por el beep del pulsador
 static uint32_t beep_fin = 0;            // Instante (ms) en que termina el beep
@@ -74,6 +83,8 @@ static uint8_t  temperatura = 0;         // Última temperatura válida del DHT1
 static uint16_t alarmas_total = 0;       // Cantidad de alarmas registradas desde el arranque
 static uint8_t  ultima_alarma = 0;       // Código de la última alarma registrada
 static uint8_t  alarma_temp_activa = 0;  // 1 = la alarma de temperatura ya fue avisada (evita repetirla)
+static uint8_t  rearme_habilitado = 0;   // 1 = en SEGURO se cumplió la condición local para aceptar CMD_REARME
+static uint8_t  cont_boton = 0;          // Muestras consecutivas con el pulsador apretado
 
 //===== Tipo de función sin argumentos, para las tablas =====
 typedef void (*fn_t)(void);              // Puntero a función que no recibe ni devuelve nada
@@ -83,18 +94,21 @@ typedef void (*cmd_t)(uint16_t);         // Puntero a función de comando: recib
 static void entrar_activo(void);         // Acciones al entrar a ACTIVO
 static void entrar_standby(void);        // Acciones al entrar a STANDBY
 static void entrar_apagado(void);        // Acciones al entrar a APAGADO
+static void entrar_seguro(void);         // Acciones al entrar al estado seguro
 static void ejecutar_activo(void);       // Trabajo de cada vuelta en ACTIVO
 static void ejecutar_standby(void);      // Trabajo de cada vuelta en STANDBY
 static void ejecutar_apagado(void);      // Trabajo de cada vuelta en APAGADO
-static void dormir_nada(void);           // No duerme (ACTIVO)
+static void ejecutar_seguro(void);       // Trabajo de cada vuelta en el estado seguro
+static void dormir_nada(void);           // No duerme (ACTIVO y SEGURO)
 static void dormir_idle(void);           // Duerme en Idle (STANDBY)
 static void dormir_power_down(void);     // Duerme en Power-Down (APAGADO)
 static void cambiar_estado(uint8_t nuevo);   // Transición entre estados
+static void ir_a_seguro(uint8_t codigo); // Registra una alarma y pasa al estado seguro
 
 //===== Tablas de la máquina de estados (una posición por estado) =====
-static const fn_t tabla_entrar[N_ESTADOS]   = { entrar_activo, entrar_standby, entrar_apagado };      // Al entrar
-static const fn_t tabla_ejecutar[N_ESTADOS] = { ejecutar_activo, ejecutar_standby, ejecutar_apagado }; // En cada vuelta
-static const fn_t tabla_dormir[N_ESTADOS]   = { dormir_nada, dormir_idle, dormir_power_down };            // Al final de cada vuelta
+static const fn_t tabla_entrar[N_ESTADOS]   = { entrar_activo, entrar_standby, entrar_apagado, entrar_seguro };      // Al entrar
+static const fn_t tabla_ejecutar[N_ESTADOS] = { ejecutar_activo, ejecutar_standby, ejecutar_apagado, ejecutar_seguro }; // En cada vuelta
+static const fn_t tabla_dormir[N_ESTADOS]   = { dormir_nada, dormir_idle, dormir_power_down, dormir_nada };            // Al final de cada vuelta
 
 //==========================================================
 // Interrupción externa INT0 (pulsador local)
@@ -103,6 +117,14 @@ ISR(INT0_vect)                           // Se ejecuta al apretar el pulsador (t
 {
 	flag_int0 = 1;                       // Solo avisa: el trabajo se hace en el lazo principal, no en la ISR
 }                                        // Fin de la ISR de INT0
+
+//==========================================================
+// Interrupción externa INT1 (pulsador de emergencia)
+//==========================================================
+ISR(INT1_vect)                           // Se ejecuta al apretar el pulsador de emergencia (también despierta de Power-Down)
+{
+	flag_int1 = 1;                       // Solo avisa: el trabajo se hace en el lazo principal, no en la ISR
+}                                        // Fin de la ISR de INT1
 
 //==========================================================
 // Funciones auxiliares
@@ -138,7 +160,7 @@ static void guardar_contexto(void)       // Guarda el estado necesario para cont
 	hay_contexto = 1;                    // Marca que hay algo para restaurar
 }                                        // Fin de guardar_contexto
 
-static void tareas_activar(uint8_t dht, uint8_t sensores, uint8_t lcd, uint8_t ledt);  // Prototipo (usa la tabla de tareas)
+static void tareas_activar(uint8_t boton, uint8_t dht, uint8_t sensores, uint8_t lcd, uint8_t ledt);  // Prototipo (usa la tabla de tareas)
 
 static void usart_dormir(void)           // Apaga la USART respetando el orden obligatorio
 {
@@ -168,6 +190,17 @@ static void restaurar_perifericos(void)  // Vuelve a dejar todo disponible (orde
 //==========================================================
 // Tareas periódicas (las ejecuta el planificador)
 //==========================================================
+static void tarea_boton(void)            // Cada 20 ms: mide cuánto tiempo está apretado el pulsador
+{
+	extern void boton_largo(void);       // Se define más abajo
+	if (!(PIND & (1 << BOTON))) {        // Pulsador apretado (con pull-up, apretado = 0)
+		if (cont_boton < 255) cont_boton++;      // Cuenta una muestra más
+		if (cont_boton == BOTON_LARGO_MUESTRAS) boton_largo();  // Justo al llegar a 1 s: pulsación larga (una sola vez)
+		} else {                             // Pulsador suelto
+		cont_boton = 0;                  // Reinicia la cuenta
+	}                                    // Fin de la lectura del pulsador
+}                                        // Fin de tarea_boton
+
 static void tarea_led(void)              // Cada 200 ms: hace parpadear el LED (tarea periódica del Problema A)
 {
 	if (led) PORTB ^= (1 << LED_ACT);    // Si el parpadeo está activado, invierte el LED
@@ -191,10 +224,15 @@ static void tarea_sensores(void)         // Cada 500 ms: controla la temperatura
 	}                                    // Fin del control de temperatura
 }                                        // Fin de tarea_sensores
 
-static const char *const nombre_estado[N_ESTADOS] = { "ACTIVO", "STANDBY", "APAGADO" };  // Textos para la LCD
+static const char *const nombre_estado[N_ESTADOS] = { "ACTIVO", "STANDBY", "APAGADO", "SEGURO" };  // Textos para la LCD
 
 static void tarea_lcd(void)              // Cada 500 ms: actualiza el buffer de la LCD
 {
+	if (estado == E_SEGURO) {            // En el estado seguro se muestra otro texto
+		lcd_nb_linea(0, "EMERGENCIA");   // Fila 0
+		lcd_nb_linea(1, rearme_habilitado ? "Rearme: app/1s" : "Pulsar rearme");  // Fila 1 según la condición de rearme
+		return;                          // No sigue con el formato normal
+	}                                    // Fin del caso seguro
 	lcd_nb_linea(0, nombre_estado[estado]);      // Fila 0: nombre del estado
 	lcd_nb_linea(1, "ADC      T   C"); // Fila 1: plantilla con las etiquetas (solo ADC y temperatura)
 	lcd_nb_numero(1, 4, adc_ultimo(), 4);        // Valor del ADC (columnas 4 a 7)
@@ -203,6 +241,7 @@ static void tarea_lcd(void)              // Cada 500 ms: actualiza el buffer de 
 
 //===== Tabla de tareas: { período en ms, último instante, función, activa } =====
 static tarea_t tareas[] = {
+	{ 20,   0, tarea_boton,   1 },       // T_BOTON: cada 20 ms
 	{ 2000, 0, tarea_dht,     1 },       // T_DHT: cada 2 s (el DHT11 pide al menos 1 s entre lecturas)
 	{ 500,  0, tarea_sensores, 1 },      // T_SENSORES: cada 500 ms
 	{ 500,  0, tarea_lcd,     1 },       // T_LCD: cada 500 ms (no en cada vuelta, para no refrescar sin parar)
@@ -210,8 +249,9 @@ static tarea_t tareas[] = {
 };
 #define N_TAREAS (sizeof(tareas) / sizeof(tareas[0]))   // Cantidad de tareas de la tabla
 
-static void tareas_activar(uint8_t dht, uint8_t sensores, uint8_t lcd, uint8_t ledt)  // Activa o suspende cada tarea
+static void tareas_activar(uint8_t boton, uint8_t dht, uint8_t sensores, uint8_t lcd, uint8_t ledt)  // Activa o suspende cada tarea
 {
+	tareas[T_BOTON].activa = boton;      // Tarea del pulsador
 	tareas[T_DHT].activa = dht;          // Tarea del DHT11
 	tareas[T_SENSORES].activa = sensores;    // Tarea de sensores
 	tareas[T_LCD].activa = lcd;          // Tarea de la LCD
@@ -233,7 +273,7 @@ static void entrar_activo(void)          // ACTIVO: tareas periódicas, sensores
 	}                                    // Fin de la restauración del contexto
 	aplicar_actuadores();                // Los pines reflejan el estado deseado
 	t_actividad = millis();              // Reinicia la cuenta de inactividad
-	tareas_activar(1, 1, 1, 1);          // En ACTIVO corren las cuatro tareas (incluido el parpadeo del LED)
+	tareas_activar(1, 1, 1, 1, 1);       // En ACTIVO corren las cinco tareas (incluido el parpadeo del LED)
 	tarea_lcd();                         // Escribe el texto ya, sin esperar 500 ms
 }                                        // Fin de entrar_activo
 
@@ -242,7 +282,7 @@ static void entrar_standby(void)         // STANDBY: Idle entre tareas, LCD con 
 	guardar_contexto();                  // Guarda el estado necesario para continuar
 	while (dht_ocupado()) dht_tarea();   // Si hay una lectura del DHT11 en curso, espera que termine (máx. 20 ms)
 	PORTB &= ~(1 << LED_ACT);            // El LED queda apagado mientras dura STANDBY
-	tareas_activar(0, 0, 0, 0);          // En STANDBY no corre ninguna tarea periódica
+	tareas_activar(0, 0, 0, 0, 0);       // En STANDBY no corre ninguna tarea periódica
 	adc_dormir();                        // El ADC no se necesita en STANDBY
 	tiempo_base_lenta();                 // Timer0 deja de interrumpir cada 1 ms: el tiempo avanza de a 100 ms con Timer1
 	energia_prr_apagar(PRR_TIM0 | PRR_TIM2);     // Timer0 (ya sin uso) y Timer2 (solo el DHT11) sin reloj
@@ -258,7 +298,7 @@ static void entrar_apagado(void)         // APAGADO: se apaga todo lo que no hac
 	PORTB &= ~((1 << LED_ACT) | (1 << BUZZER));  // LED y buzzer quedan en bajo mientras dura el sueño
 	evento(EV_CAMBIO_ESTADO, E_APAGADO); // Avisa a la aplicación antes de cortar la USART
 	while (dht_ocupado()) dht_tarea();   // Termina una lectura del DHT11 en curso
-	tareas_activar(0, 0, 0, 0);          // Ninguna tarea periódica
+	tareas_activar(0, 0, 0, 0, 0);       // Ninguna tarea periódica
 	usart_dormir();                      // USART apagada por PRR: en Power-Down no recibe de todos modos
 	adc_dormir();                        // ADC apagado
 	lcd_nb_linea(0, "APAGADO");          // Último texto de la LCD
@@ -271,10 +311,24 @@ static void entrar_apagado(void)         // APAGADO: se apaga todo lo que no hac
 	wdt_modo_interrupcion(WDT_8S);       // WDT en modo interrupción, 8 s: despierta de Power-Down (nunca reinicia)
 }                                        // Fin de entrar_apagado
 
+static void entrar_seguro(void)          // SEGURO: salidas apagadas, sin dormir, solo se sale con condición local
+{
+	restaurar_perifericos();             // Hace falta la comunicación y la LCD para informar
+	dht_init();                          // Timer2 con reloj otra vez
+	buzzer = 0;                          // Buzzer apagado (el parpadeo preferido por el usuario se conserva en 'led')
+	beep_activo = 0;                     // Cancela un beep en curso
+	hay_contexto = 0;                    // No se restaura nada al salir: se vuelve a un estado limpio
+	PORTB &= ~((1 << LED_ACT) | (1 << BUZZER));  // LED y buzzer quedan en bajo
+	rearme_habilitado = 0;               // Todavía no se cumplió la condición de recuperación
+	t_actividad = millis();              // Reinicia la cuenta de inactividad
+	tareas_activar(1, 1, 1, 1, 0);       // Siguen el pulsador, el sensor y la LCD; el LED no parpadea
+	tarea_lcd();                         // Muestra el texto de emergencia enseguida
+}                                        // Fin de entrar_seguro
+
 //==========================================================
 // Máquina de estados: trabajo de cada vuelta
 //==========================================================
-static void ejecutar_activo(void)        // ACTIVO: controla la inactividad
+static void ejecutar_activo(void)        // ACTIVO: controla la inactividad y la prueba de bloqueo
 {
 	if ((uint32_t)(millis() - t_actividad) >= T_STANDBY_MS) cambiar_estado(E_STANDBY);  // 10 s sin actividad: STANDBY
 }                                        // Fin de ejecutar_activo
@@ -310,10 +364,15 @@ static void ejecutar_apagado(void)       // APAGADO: atiende los despertares del
 	}                                    // Fin del despertar por WDT (después de esto vuelve a Power-Down)
 }                                        // Fin de ejecutar_apagado
 
+static void ejecutar_seguro(void)        // SEGURO: no hay inactividad ni sueño; solo se espera la recuperación
+{
+	// Nada que hacer en cada vuelta: la salida la dispara el pulsador D2 (boton_largo) o CMD_REARME validado
+}                                        // Fin de ejecutar_seguro
+
 //==========================================================
 // Máquina de estados: dormir al final de cada vuelta
 //==========================================================
-static void dormir_nada(void)            // ACTIVO no duerme
+static void dormir_nada(void)            // ACTIVO y SEGURO no duermen
 {
 }                                        // Fin de dormir_nada
 
@@ -338,6 +397,17 @@ static void cambiar_estado(uint8_t nuevo)    // Cambia de estado y ejecuta las a
 	if (nuevo != E_APAGADO) evento(EV_CAMBIO_ESTADO, nuevo);  // Notifica (APAGADO ya notificó antes de cortar la USART)
 }                                        // Fin de cambiar_estado
 
+static void ir_a_seguro(uint8_t codigo)  // Emergencia: registra la alarma y pasa al estado seguro
+{
+	registrar_alarma(codigo, 0);         // Deja constancia del motivo
+	cambiar_estado(E_SEGURO);            // Estado seguro
+}                                        // Fin de ir_a_seguro
+
+void boton_largo(void)                   // Pulsación de 1 s en D2 (la llama tarea_boton): solo sirve para el rearme local
+{
+	if (estado == E_SEGURO) cambiar_estado(E_ACTIVO);   // En SEGURO: rearme local (condición cumplida: pulsador físico)
+}                                        // Fin de boton_largo
+
 static void atender_int0(void)           // Procesa el flanco del pulsador (fuera de la ISR)
 {
 	if (!flag_int0) return;              // No hubo pulsación
@@ -347,10 +417,22 @@ static void atender_int0(void)           // Procesa el flanco del pulsador (fuer
 	t_ultimo_int0 = ahora;               // Recuerda el instante de esta pulsación
 	t_actividad = ahora;                 // Es un evento válido: reinicia la inactividad
 	if (estado == E_STANDBY || estado == E_APAGADO) cambiar_estado(E_ACTIVO);   // Despierta y vuelve a ACTIVO
+	else if (estado == E_SEGURO) { rearme_habilitado = 1; return; }   // En SEGURO la pulsación habilita CMD_REARME desde la aplicación (sin beep)
 	beep_activo = 1;                     // La pulsación activa el buzzer (requisito 5 del Problema A)
 	beep_fin = millis() + T_BEEP_MS;     // Instante en que el beep debe terminar
 	aplicar_actuadores();                // Enciende el buzzer
 }                                        // Fin de atender_int0
+
+static void atender_int1(void)           // Procesa el flanco del pulsador de emergencia (fuera de la ISR)
+{
+	if (!flag_int1) return;              // No hubo pulsación
+	flag_int1 = 0;                       // Consume el aviso
+	uint32_t ahora = millis();           // Instante actual
+	if ((uint32_t)(ahora - t_ultimo_int1) < ANTIREBOTE_MS) return;   // Rebote del pulsador: se ignora
+	t_ultimo_int1 = ahora;               // Recuerda el instante de esta pulsación
+	t_actividad = ahora;                 // Es un evento válido: reinicia la inactividad
+	if (estado != E_SEGURO) ir_a_seguro(EV_EMERG_LOCAL);   // Desde cualquier estado: registra la alarma y pasa al estado seguro
+}                                        // Fin de atender_int1
 
 static void beep_tarea(void)             // Apaga el buzzer cuando termina el beep (sin bloquear)
 {
@@ -378,6 +460,7 @@ static void cmd_sensores(uint16_t dato)  // 0x02: pide las lecturas (ADC y tempe
 
 static void cmd_cambiar(uint16_t dato)   // 0x03: cambia entre ACTIVO (0), STANDBY (1) y APAGADO (2)
 {
+	if (estado == E_SEGURO) { trama_enviar_error(ERR_RECHAZADO); return; }   // En emergencia no se cambia de estado desde la app
 	if (dato > E_APAGADO) { trama_enviar_error(ERR_RECHAZADO); return; }     // Solo se permiten los 3 estados normales
 	enviar(RESP_ACK(CMD_CAMBIAR), dato); // Confirma antes de cambiar (APAGADO corta la USART)
 	cambiar_estado((uint8_t)dato);       // Hace la transición
@@ -387,7 +470,7 @@ static void cmd_actuador(uint16_t dato)  // 0x04: byte alto = 1 LED (parpadeo) /
 {
 	uint8_t cual = dato >> 8;            // Qué actuador
 	uint8_t valor = dato & 0xFF;         // Qué valor
-	if (valor > 1 || cual < 1 || cual > 2) {   // Validación: valor 0/1, actuador 1/2
+	if (estado == E_SEGURO || valor > 1 || cual < 1 || cual > 2) {   // Validación: no en emergencia, valor 0/1, actuador 1/2
 		trama_enviar_error(ERR_RECHAZADO);   // Comando no permitido
 		return;                          // No modifica nada
 	}                                    // Fin de la validación
@@ -396,12 +479,30 @@ static void cmd_actuador(uint16_t dato)  // 0x04: byte alto = 1 LED (parpadeo) /
 	enviar(RESP_ACK(CMD_ACTUADOR), dato);    // Confirma
 }                                        // Fin de cmd_actuador
 
+static void cmd_emergencia(uint16_t dato)    // 0x05: pasa al estado seguro
+{
+	(void)dato;                          // El dato no se usa
+	enviar(RESP_ACK(CMD_EMERGENCIA), 0); // Confirma antes de cambiar
+	ir_a_seguro(EV_EMERG_APP);           // Registra la alarma y pasa al estado seguro
+}                                        // Fin de cmd_emergencia
+
 static void cmd_alarmas(uint16_t dato)   // 0x06: consulta los eventos de alarma
 {
 	(void)dato;                          // El dato no se usa
 	enviar(RESP_ACK(CMD_ALARMAS), alarmas_total);    // Cantidad de alarmas
 	evento(ultima_alarma, 0);            // Código de la última alarma
 }                                        // Fin de cmd_alarmas
+
+static void cmd_rearme(uint16_t dato)    // 0x07: salir del estado seguro (solo si se cumplió la condición local)
+{
+	(void)dato;                          // El dato no se usa
+	if (estado != E_SEGURO || !rearme_habilitado) {      // Solo se acepta en SEGURO y con el pulsador ya apretado
+		trama_enviar_error(ERR_RECHAZADO);   // Rechazado: la app no puede anular la emergencia sola
+		return;                          // No modifica nada
+	}                                    // Fin de la validación
+	enviar(RESP_ACK(CMD_REARME), 0);     // Confirma
+	cambiar_estado(E_ACTIVO);            // Vuelve a ACTIVO
+}                                        // Fin de cmd_rearme
 
 //===== Tabla de comandos: la posición es el código del comando (NULL = no existe) =====
 static const cmd_t tabla_cmd[8] = {
@@ -410,9 +511,9 @@ static const cmd_t tabla_cmd[8] = {
 	cmd_sensores,                        // 0x02
 	cmd_cambiar,                         // 0x03
 	cmd_actuador,                        // 0x04
-	NULL,                                // 0x05: no implementado
+	cmd_emergencia,                      // 0x05
 	cmd_alarmas,                         // 0x06
-	NULL,                                // 0x07: no implementado
+	cmd_rearme,                          // 0x07
 };
 
 static void procesar_trama(void)         // Lee una trama (si hay) y la despacha, fuera de las ISR
@@ -443,11 +544,11 @@ static void procesar_trama(void)         // Lee una trama (si hay) y la despacha
 int main(void)                           // Punto de entrada
 {
 	DDRB |= (1 << LED_ACT) | (1 << BUZZER) | (1 << LED_WDT);     // LED, buzzer y LED del WDT como salidas
-	DDRD &= ~(1 << BOTON);              // Pulsador como entrada
-	PORTD |= (1 << BOTON);              // Con resistencia de pull-up interna (apretado = 0)
-	EICRA = (EICRA & ~(1 << ISC00)) | (1 << ISC01);  // INT0 por flanco descendente
-	EIFR = (1 << INTF0);                 // Borra un posible flag pendiente
-	EIMSK |= (1 << INT0);                // Habilita INT0
+	DDRD &= ~((1 << BOTON) | (1 << EMERG));     // Pulsadores como entradas
+	PORTD |= (1 << BOTON) | (1 << EMERG);       // Con resistencia de pull-up interna (apretado = 0)
+	EICRA = (EICRA & ~((1 << ISC00) | (1 << ISC10))) | (1 << ISC01) | (1 << ISC11);  // INT0 e INT1 por flanco descendente
+	EIFR = (1 << INTF0) | (1 << INTF1);  // Borra posibles flags pendientes
+	EIMSK |= (1 << INT0) | (1 << INT1);  // Habilita INT0 e INT1
 
 	energia_init();                      // Apaga el comparador analógico y el SPI (no se usan)
 	tiempo_init();                       // Timer0 (1 ms), Timer1 (100 ms) y ADC
@@ -455,12 +556,14 @@ int main(void)                           // Punto de entrada
 	sei();                               // Habilita las interrupciones globales
 	lcd_nb_init();                       // Inicia la LCD (bloquea ~1 s; el WDT todavía no está armado)
 	t_ultimo_int0 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D2
+	t_ultimo_int1 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D3
 
 	cambiar_estado(E_ACTIVO);            // Arranca en ACTIVO (con el LED parpadeando)
 
 	for (;;) {                           // Lazo principal
 		if (estado != E_APAGADO) wdt_alimentar();    // Supervisión: reinicia la cuenta del WDT (en APAGADO el WDT es solo despertador)
 		atender_int0();                  // Procesa el pulsador D2
+		atender_int1();                  // Procesa el pulsador de emergencia D3
 		beep_tarea();                    // Termina el beep del buzzer cuando corresponde
 		procesar_trama();                // Procesa comandos Bluetooth (fuera de las ISR)
 		if (dht_tarea()) {               // Si terminó una lectura del DHT11...
@@ -472,6 +575,6 @@ int main(void)                           // Punto de entrada
 		planificador_ejecutar(tareas, N_TAREAS);     // Ejecuta las tareas periódicas vencidas
 		tabla_ejecutar[estado]();        // Trabajo propio del estado actual
 		lcd_nb_tarea();                  // Envía a la LCD unos pocos caracteres pendientes
-		tabla_dormir[estado]();          // Duerme según el estado (ACTIVO no duerme)
+		tabla_dormir[estado]();          // Duerme según el estado (ACTIVO y SEGURO no duermen)
 	}                                    // Fin del lazo principal
 }                                        // Fin de main
