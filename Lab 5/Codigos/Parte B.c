@@ -3,6 +3,7 @@
 //   D1 (TX) -> RXD del HC-05 (con divisor de 1k/2k, el HC-05 es de 3,3 V)
 //   D2 (INT0) pulsador a GND (despierta, hace sonar el buzzer y sirve para el rearme local)
 //   D3 (INT1) pulsador de emergencia a GND (desde cualquier estado pasa al estado seguro)
+//   D5 cable a GND solo para simular el bloqueo en la Prueba B del WDT
 //   D4 DATA del DHT11
 //   D9 buzzer activo (actuador 2)
 //   D8 pin de prueba (osciloscopio): pulso en cada despertar del WDT (Prueba A)
@@ -14,6 +15,7 @@
 #define F_CPU 16000000UL                 
 
 #include <avr/io.h>                      // Nombres de registros y bits del ATmega328P
+#include <avr/eeprom.h>                 // Lectura y escritura de la EEPROM (sobrevive a cualquier reinicio)
 #include <avr/interrupt.h>               // Macro ISR() y funciones sei()/cli()
 #include <stdint.h>                      // Tipos enteros de tamaño fijo (uint8_t, uint16_t, uint32_t)
 #include <stddef.h>                      // Define NULL para las tablas de punteros
@@ -41,6 +43,7 @@
 #define LED_WDT   PB0                    // D8: pin de prueba para el osciloscopio (pulso en cada despertar del WDT)
 #define BOTON     PD2                    // D2: pulsador local (INT0)
 #define EMERG     PD3                    // D3: pulsador de emergencia (INT1)
+#define BLOQUEO   PD5                    // D5: se une a GND para simular el bloqueo (Prueba B)
 
 //===== Estados =====
 #define E_ACTIVO   0                     // Estado ACTIVO: todo funcionando
@@ -53,8 +56,10 @@
 #define EV_TEMP_ALTA     1               // Alarma: temperatura sobre el límite (valor = °C)
 #define EV_EMERG_APP     2               // Alarma: emergencia pedida desde la aplicación
 #define EV_EMERG_LOCAL   3               // Alarma: emergencia pedida con el pulsador local
+#define EV_RESET_WDT     4               // Alarma: el sistema se reinició por el WDT
 #define EV_WDT_DESPERTAR 5               // Informativo: despertar por WDT (valor = número de evento)
 #define EV_CAMBIO_ESTADO 6               // Informativo: cambio de estado (valor = estado nuevo)
+#define EV_ARRANQUE      7               // Informativo: arranque (valor = causa de reset, bits de MCUSR)
 
 //===== Índices de la tabla de tareas =====
 #define T_BOTON     0                    // Tarea que mide la pulsación larga
@@ -85,6 +90,18 @@ static uint8_t  ultima_alarma = 0;       // Código de la última alarma registr
 static uint8_t  alarma_temp_activa = 0;  // 1 = la alarma de temperatura ya fue avisada (evita repetirla)
 static uint8_t  rearme_habilitado = 0;   // 1 = en SEGURO se cumplió la condición local para aceptar CMD_REARME
 static uint8_t  cont_boton = 0;          // Muestras consecutivas con el pulsador apretado
+
+//===== Causa de reset que deja el bootloader del Arduino (copia de MCUSR en r2) =====
+#define EE_MARCA ((uint8_t *)0)          // Dirección 0 de la EEPROM: guarda la marca del bloqueo provocado
+#define MARCA_EE 0xA5                    // Valor de la marca en EEPROM (una EEPROM sin usar vale 0xFF)
+#define MARCA_BLOQUEO 0xB10C             // Valor que se escribe antes de la simulación de bloqueo
+static volatile uint16_t marca_bloqueo __attribute__((section(".noinit")));   // En RAM sin inicializar: sobrevive al reinicio del WDT aunque el bootloader borre MCUSR
+uint8_t r2_arranque __attribute__((section(".noinit")));   // En .noinit: el arranque de C no la borra
+void captura_r2(void) __attribute__((naked, used, section(".init0")));   // Se ejecuta lo primero de todo, sin prólogo
+void captura_r2(void)                    // El bootloader borra MCUSR pero deja su valor original en r2
+{
+	__asm__ __volatile__("mov %0, r2" : "=r" (r2_arranque));   // Copia r2 a la variable antes de que nadie lo pise
+}                                        // Fin de captura_r2
 
 //===== Tipo de función sin argumentos, para las tablas =====
 typedef void (*fn_t)(void);              // Puntero a función que no recibe ni devuelve nada
@@ -330,6 +347,12 @@ static void entrar_seguro(void)          // SEGURO: salidas apagadas, sin dormir
 //==========================================================
 static void ejecutar_activo(void)        // ACTIVO: controla la inactividad y la prueba de bloqueo
 {
+	if (!(PIND & (1 << BLOQUEO))) {      // Pin D5 unido a GND: simula un bloqueo (Prueba B)
+		evento(EV_CAMBIO_ESTADO, 0xFF);  // Deja una marca en la comunicación antes de bloquear
+		eeprom_update_byte(EE_MARCA, MARCA_EE);   // Marca en EEPROM (~4 ms): sobrevive al reinicio aunque el bootloader borre todo lo demás
+		marca_bloqueo = MARCA_BLOQUEO;   // Deja anotado en RAM que el bloqueo fue provocado (el reinicio lo hará el WDT)
+		while (1) { }                    // Bucle infinito: no se vuelve a alimentar el WDT, que reinicia el micro
+	}                                    // Fin de la simulación de bloqueo
 	if ((uint32_t)(millis() - t_actividad) >= T_STANDBY_MS) cambiar_estado(E_STANDBY);  // 10 s sin actividad: STANDBY
 }                                        // Fin de ejecutar_activo
 
@@ -544,8 +567,8 @@ static void procesar_trama(void)         // Lee una trama (si hay) y la despacha
 int main(void)                           // Punto de entrada
 {
 	DDRB |= (1 << LED_ACT) | (1 << BUZZER) | (1 << LED_WDT);     // LED, buzzer y LED del WDT como salidas
-	DDRD &= ~((1 << BOTON) | (1 << EMERG));     // Pulsadores como entradas
-	PORTD |= (1 << BOTON) | (1 << EMERG);       // Con resistencia de pull-up interna (apretado = 0)
+	DDRD &= ~((1 << BOTON) | (1 << EMERG) | (1 << BLOQUEO));    // Pulsadores y pin de bloqueo como entradas
+	PORTD |= (1 << BOTON) | (1 << EMERG) | (1 << BLOQUEO);      // Con resistencia de pull-up interna (apretado = 0)
 	EICRA = (EICRA & ~((1 << ISC00) | (1 << ISC10))) | (1 << ISC01) | (1 << ISC11);  // INT0 e INT1 por flanco descendente
 	EIFR = (1 << INTF0) | (1 << INTF1);  // Borra posibles flags pendientes
 	EIMSK |= (1 << INT0) | (1 << INT1);  // Habilita INT0 e INT1
@@ -558,7 +581,17 @@ int main(void)                           // Punto de entrada
 	t_ultimo_int0 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D2
 	t_ultimo_int1 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D3
 
-	cambiar_estado(E_ACTIVO);            // Arranca en ACTIVO (con el LED parpadeando)
+	uint8_t causa = energia_causa_reset();       // Causa del último reinicio (MCUSR capturado antes de main)
+	if (eeprom_read_byte(EE_MARCA) == MARCA_EE) { eeprom_update_byte(EE_MARCA, 0xFF); causa |= RESET_WDT; }   // Marca en EEPROM: el bloqueo fue provocado, el reinicio fue del WDT
+	if (marca_bloqueo == MARCA_BLOQUEO) { marca_bloqueo = 0; causa |= RESET_WDT; }   // La marca en RAM delata el bloqueo provocado: fue reinicio por WDT
+	if ((r2_arranque & 0x0F) == RESET_WDT) causa |= RESET_WDT;   // Con bootloader, MCUSR llega borrado: se usa la copia de r2
+	if (causa & RESET_WDT) {             // Reinicio provocado por el WDT: venimos de un bloqueo
+		cambiar_estado(E_SEGURO);        // Recupera un estado seguro
+		registrar_alarma(EV_RESET_WDT, causa);   // Deja constancia de la causa
+		} else {                             // Encendido normal u otro reset
+		cambiar_estado(E_ACTIVO);        // Arranca en ACTIVO (con el LED parpadeando)
+	}                                    // Fin de la selección del estado inicial
+	evento(EV_ARRANQUE, causa);          // Informa la causa de reset a la aplicación
 
 	for (;;) {                           // Lazo principal
 		if (estado != E_APAGADO) wdt_alimentar();    // Supervisión: reinicia la cuenta del WDT (en APAGADO el WDT es solo despertador)
