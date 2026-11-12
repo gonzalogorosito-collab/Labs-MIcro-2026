@@ -1,8 +1,10 @@
 // Conexiones:
+//   D0 (RX) <- TXD del HC-05
+//   D1 (TX) -> RXD del HC-05 (con divisor de 1k/2k, el HC-05 es de 3,3 V)
 //   D2 (INT0) pulsador a GND (hace sonar el buzzer)
 //   D4 DATA del DHT11
 //   D9 buzzer activo (actuador 2)
-//   D13 LED: parpadea cada 200 ms en ACTIVO (actuador 1)
+//   D13 LED: parpadea cada 200 ms en ACTIVO (actuador 1: la aplicación activa o desactiva el parpadeo)
 //   A2 potenciómetro o sensor analógico (ADC2)
 //   A4 (SDA) y A5 (SCL) a la LCD I2C
 //==========================================================
@@ -12,7 +14,10 @@
 #include <avr/io.h>                     // Nombres de registros y bits del ATmega328P
 #include <avr/interrupt.h>               // Macro ISR() y funciones sei()/cli()
 #include <stdint.h>                      // Tipos enteros de tamaño fijo (uint8_t, uint16_t, uint32_t)
+#include <stddef.h>                      // Define NULL para las tablas de punteros
 #include "tiempo.h"                      // millis(), ADC periódico y planificador de tareas
+#include "uart_rb.h"                     // USART por interrupciones con buffers circulares
+#include "trama.h"                       // Protocolo de tramas para el Bluetooth
 #include "lcd_nb.h"                      // LCD 16x2 I2C sin bloqueo
 #include "dht11_nb.h"                    // Sensor DHT11 sin bloqueo
 
@@ -33,8 +38,9 @@
 #define E_ACTIVO   0                     // Estado ACTIVO: todo funcionando
 #define N_ESTADOS  1                     // Cantidad de estados
 
-//===== Códigos de alarma =====
+//===== Códigos de evento (byte alto del DATO de RESP_EVENTO; el byte bajo es un valor) =====
 #define EV_TEMP_ALTA     1               // Alarma: temperatura sobre el límite (valor = °C)
+#define EV_CAMBIO_ESTADO 6               // Informativo: cambio de estado (valor = estado nuevo)
 
 //===== Índices de la tabla de tareas =====
 #define T_DHT       0                    // Tarea que inicia la lectura del DHT11
@@ -59,6 +65,7 @@ static uint8_t  alarma_temp_activa = 0;  // 1 = la alarma de temperatura ya fue 
 
 //===== Tipo de función sin argumentos, para las tablas =====
 typedef void (*fn_t)(void);              // Puntero a función que no recibe ni devuelve nada
+typedef void (*cmd_t)(uint16_t);         // Puntero a función de comando: recibe el DATO de la trama
 
 //===== Prototipos (las tablas necesitan conocer las funciones antes de definirlas) =====
 static void entrar_activo(void);         // Acciones al entrar a ACTIVO
@@ -82,11 +89,21 @@ ISR(INT0_vect)                           // Se ejecuta al apretar el pulsador
 //==========================================================
 // Funciones auxiliares
 //==========================================================
-static void registrar_alarma(uint8_t codigo, uint8_t valor)  // Guarda una alarma
+static void enviar(uint8_t cmd, uint16_t dato)   // Envía una trama a la aplicación
 {
-	(void)valor;                         // El valor todavía no se informa a nadie
+	trama_enviar(cmd, dato);             // Arma y encola la trama (con checksum)
+}                                        // Fin de enviar
+
+static void evento(uint8_t codigo, uint8_t valor)    // Envía una notificación de evento a la aplicación
+{
+	enviar(RESP_EVENTO, ((uint16_t)codigo << 8) | valor);   // Byte alto = código, byte bajo = valor
+}                                        // Fin de evento
+
+static void registrar_alarma(uint8_t codigo, uint8_t valor)  // Guarda una alarma y la notifica
+{
 	alarmas_total++;                     // Cuenta una alarma más
 	ultima_alarma = codigo;              // Recuerda cuál fue la última
+	evento(codigo, valor);               // Avisa a la aplicación
 }                                        // Fin de registrar_alarma
 
 static void aplicar_actuadores(void)     // Lleva los pines al estado deseado de LED y buzzer
@@ -143,7 +160,7 @@ static tarea_t tareas[] = {
 //==========================================================
 // Máquina de estados: entrada a cada estado
 //==========================================================
-static void entrar_activo(void)          // ACTIVO: tareas periódicas, sensores y LCD
+static void entrar_activo(void)          // ACTIVO: tareas periódicas, sensores, LCD y Bluetooth
 {
 	dht_init();                          // Configura el sensor (usa Timer2)
 	aplicar_actuadores();                // Los pines reflejan el estado deseado
@@ -173,6 +190,7 @@ static void cambiar_estado(uint8_t nuevo)    // Cambia de estado y ejecuta las a
 	if (nuevo >= N_ESTADOS) return;      // Estado inexistente: se ignora
 	estado = nuevo;                      // Registra el estado nuevo
 	tabla_entrar[nuevo]();               // Ejecuta la función de entrada de ese estado (sin switch-case)
+	evento(EV_CAMBIO_ESTADO, nuevo);     // Notifica el cambio a la aplicación
 }                                        // Fin de cambiar_estado
 
 static void atender_int0(void)           // Procesa el flanco del pulsador (fuera de la ISR)
@@ -191,9 +209,73 @@ static void beep_tarea(void)             // Apaga el buzzer cuando termina el be
 {
 	if (beep_activo && (int32_t)(millis() - beep_fin) >= 0) {   // Si está sonando y ya pasó su tiempo...
 		beep_activo = 0;                 // ...el beep termina...
-		aplicar_actuadores();            // ...y el buzzer vuelve al valor deseado
+		aplicar_actuadores();            // ...y el buzzer vuelve al valor pedido por la aplicación
 	}                                    // Fin del control del beep
 }                                        // Fin de beep_tarea
+
+//==========================================================
+// Comandos Bluetooth (se validan antes de modificar el sistema)
+//==========================================================
+static void cmd_estado(uint16_t dato)    // 0x01: consulta el estado
+{
+	(void)dato;                          // El dato no se usa
+	enviar(RESP_ACK(CMD_ESTADO), estado);    // Responde con el número de estado
+}                                        // Fin de cmd_estado
+
+static void cmd_sensores(uint16_t dato)  // 0x02: pide las lecturas (ADC y temperatura)
+{
+	(void)dato;                          // El dato no se usa
+	enviar(RESP_ADC, adc_ultimo());      // Último valor del ADC
+	enviar(RESP_TEMP, temperatura);      // Última temperatura válida
+}                                        // Fin de cmd_sensores
+
+static void cmd_actuador(uint16_t dato)  // 0x04: byte alto = 1 LED (parpadeo) / 2 buzzer; byte bajo = 0 apagar / 1 encender
+{
+	uint8_t cual = dato >> 8;            // Qué actuador
+	uint8_t valor = dato & 0xFF;         // Qué valor
+	if (valor > 1 || cual < 1 || cual > 2) {     // Validación: valor 0/1, actuador 1/2
+		trama_enviar_error(ERR_RECHAZADO);   // Comando no permitido
+		return;                          // No modifica nada
+	}                                    // Fin de la validación
+	if (cual == 1) led = valor; else buzzer = valor;     // Guarda el estado deseado
+	aplicar_actuadores();                // Lo aplica a los pines
+	enviar(RESP_ACK(CMD_ACTUADOR), dato);    // Confirma
+}                                        // Fin de cmd_actuador
+
+static void cmd_alarmas(uint16_t dato)   // 0x06: consulta los eventos de alarma
+{
+	(void)dato;                          // El dato no se usa
+	enviar(RESP_ACK(CMD_ALARMAS), alarmas_total);    // Cantidad de alarmas
+	evento(ultima_alarma, 0);            // Código de la última alarma
+}                                        // Fin de cmd_alarmas
+
+//===== Tabla de comandos: la posición es el código del comando (NULL = no existe) =====
+static const cmd_t tabla_cmd[8] = {
+	NULL,                                // 0x00: no existe
+	cmd_estado,                          // 0x01
+	cmd_sensores,                        // 0x02
+	NULL,                                // 0x03: todavía no implementado
+	cmd_actuador,                        // 0x04
+	NULL,                                // 0x05: todavía no implementado
+	cmd_alarmas,                         // 0x06
+	NULL,                                // 0x07: todavía no implementado
+};
+
+static void procesar_trama(void)         // Lee una trama (si hay) y la despacha, fuera de las ISR
+{
+	trama_t t;                           // Trama recibida
+	int8_t r = trama_recibir(&t);        // Revisa el buffer de recepción
+	if (r == TRAMA_NADA) return;         // Todavía no hay una trama completa
+	if (r < 0) {                         // Error de recepción (checksum, formato o trama incompleta)
+		trama_enviar_error((uint16_t)(-r));      // Informa el error a la aplicación
+		return;                          // No se cambia nada
+	}                                    // Fin del tratamiento de errores
+	if (t.cmd >= 8 || tabla_cmd[t.cmd] == NULL) {    // Comando desconocido
+		trama_enviar_error(ERR_DESCONOCIDO);     // Informa el error
+		return;                          // No se cambia nada
+	}                                    // Fin del tratamiento de comandos desconocidos
+	tabla_cmd[t.cmd](t.dato);            // Ejecuta el comando (sin switch-case)
+}                                        // Fin de procesar_trama
 
 //==========================================================
 // Programa principal
@@ -208,6 +290,7 @@ int main(void)                           // Punto de entrada
 	EIMSK |= (1 << INT0);                // Habilita INT0
 
 	tiempo_init();                       // Timer0 (1 ms), Timer1 (100 ms) y ADC
+	uart_init(UART_UBRR(9600));          // USART a 9600 bps, 8N1, con interrupciones y buffers circulares
 	sei();                               // Habilita las interrupciones globales
 	lcd_nb_init();                       // Inicia la LCD (bloquea ~1 s, solo al arrancar)
 	t_ultimo_int0 = millis() - ANTIREBOTE_MS;    // Permite aceptar la primera pulsación de D2
@@ -217,6 +300,7 @@ int main(void)                           // Punto de entrada
 	for (;;) {                           // Lazo principal
 		atender_int0();                  // Procesa el pulsador D2
 		beep_tarea();                    // Termina el beep del buzzer cuando corresponde
+		procesar_trama();                // Procesa comandos Bluetooth (fuera de las ISR)
 		if (dht_tarea()) {               // Si terminó una lectura del DHT11...
 			uint8_t t, h;                // Valores leídos (la humedad no se usa en este sistema)
 			if (dht_resultado(&t, &h) == DHT_OK) {   // ...y fue correcta...
