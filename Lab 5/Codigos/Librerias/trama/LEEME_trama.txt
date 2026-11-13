@@ -1,0 +1,82 @@
+==========================================================
+ LIBRERÍA trama.c / trama.h
+ Protocolo de tramas para la comunicación Bluetooth
+==========================================================
+
+FORMATO (10 caracteres ASCII, largo fijo)
+
+       <  CC  DDDD  KK  >
+       |  |   |     |   +-- STOP: '>'
+       |  |   |     +------ CHECKSUM: 2 dígitos hex
+       |  |   +------------ DATO: 4 dígitos hex (0000 a FFFF)
+       |  +---------------- COMANDO: 2 dígitos hex
+       +------------------- START: '<'
+
+  CHECKSUM = (COMANDO + DATO_alto + DATO_bajo) mod 256
+
+  Ejemplos:  <01000001>  consultar estado
+             <03000104>  pasar a STANDBY (dato 1)
+             <05000005>  emergencia
+
+CÓMO AGREGARLA
+- Necesita uart_rb.c/h y tiempo.c/h (usa millis() para el timeout).
+- Agregar trama.c y trama.h al proyecto.
+- En main.c: #include "trama.h"
+
+COMANDOS PROPUESTOS (App -> ATmega) — se pueden cambiar en trama.h
+  0x01 CMD_ESTADO      Consultar estado              (dato 0)
+  0x02 CMD_SENSORES    Pedir lecturas                (dato 0)
+  0x03 CMD_CAMBIAR     Cambiar estado (0 ACTIVO, 1 STANDBY, 2 APAGADO)
+  0x04 CMD_ACTUADOR    Dato alto: 1 LED / 2 buzzer; dato bajo: 0/1
+  0x05 CMD_EMERGENCIA  Ir a estado seguro            (dato 0)
+  0x06 CMD_ALARMAS     Consultar eventos de alarma   (dato 0)
+  0x07 CMD_REARME      Pedir salir del estado seguro (se valida)
+
+RESPUESTAS (ATmega -> App)
+  0x80 | cmd   ACK del comando (0x81, 0x83, ...)
+  0x82 ADC, 0x83 temperatura, 0x84 humedad
+  0x90 RESP_EVENTO  notificación (dato = código de evento)
+  0xEE RESP_ERROR   error (dato = código):
+        0001 checksum  0002 formato  0003 incompleta
+        0004 comando desconocido  0005 rechazado en este estado
+
+USO BÁSICO (en el lazo principal)
+       trama_t t;
+       int8_t r = trama_recibir(&t);
+       if (r == TRAMA_OK) {
+           // t.cmd y t.dato listos: validar según el estado de la FSM
+           if (t.cmd == CMD_ESTADO) trama_enviar(RESP_ACK(CMD_ESTADO), estado);
+           else if (...) ...
+           else trama_enviar_error(ERR_DESCONOCIDO);
+       } else if (r < 0) {
+           trama_enviar_error(-r);       // error de recepción
+       }
+
+FUNCIONES
+- trama_recibir(&t)       TRAMA_NADA (0): todavía no hay trama
+                          TRAMA_OK (1): trama válida en t
+                          negativo: -código de error
+- trama_enviar(cmd, dato) Arma y encola la trama con su checksum.
+                          Devuelve 0 si no hay lugar (nunca manda
+                          una trama a medias).
+- trama_enviar_error(cod) Atajo para RESP_ERROR.
+
+QUÉ DETECTA SOLA
+- Checksum incorrecto, caracteres que no son hex, largo incorrecto.
+- Trama incompleta: más de 100 ms entre caracteres
+  (TRAMA_TIMEOUT_MS) o un '<' nuevo antes del '>'.
+- Ignora lo que llegue fuera de una trama (\r, \n, basura).
+
+LO QUE HACE LA FSM (NO la librería)
+- Decidir si un comando válido se acepta en el estado actual
+  (ej.: no salir de emergencia sin cumplir las condiciones) ->
+  si no se acepta: trama_enviar_error(ERR_RECHAZADO).
+
+APP INVENTOR
+- Para armar la trama: bloque "convert number base 10 to hex" y
+  rellenar con ceros a la izquierda (2 o 4 dígitos).
+- Enviar los 10 caracteres juntos con SendText (no de a uno).
+
+PRUEBA EN PROTEUS CON VIRTUAL TERMINAL
+- Al escribir a mano se tarda más de 100 ms entre teclas: subir
+  TRAMA_TIMEOUT_MS a 10000 para probar, y volverlo a 100 después.

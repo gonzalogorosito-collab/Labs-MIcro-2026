@@ -1,0 +1,68 @@
+==========================================================
+ LIBRERÍA dht11_nb.c / dht11_nb.h
+ Lectura del DHT11 sin bloquear
+==========================================================
+
+QUÉ HACE
+- El DHT11 pide un pulso bajo de al menos 18 ms para arrancar.
+  La librería baja la línea y vuelve enseguida; los 20 ms se
+  cuentan con millis() mientras el resto del programa sigue.
+- Pasados los 20 ms lee los 40 bits midiendo cada pulso con Timer2
+  (0,5 us por cuenta). Esa ráfaga dura ~4 ms y es el único tramo
+  que ocupa la CPU (bloqueo acotado, con interrupciones habilitadas).
+- Timer2 solo tiene reloj durante esos ~4 ms.
+
+CÓMO AGREGARLA
+- Necesita tiempo.c/h (usa millis()).
+- Agregar dht11_nb.c y dht11_nb.h al proyecto.
+- En main.c: #include "dht11_nb.h"
+- Pin: D4 (PD4). Para cambiarlo: DHT_DDR/DHT_PORT/DHT_PINR/DHT_BIT
+  en dht11_nb.h. DATA con pull-up de 10 k (el módulo ya la trae).
+- Recurso que ocupa: Timer2.
+
+USO BÁSICO
+       dht_init();                     // al arrancar
+
+       // tarea del planificador cada 2000 ms:
+       void tarea_dht(void) { dht_iniciar_lectura(); }
+
+       // en el lazo principal, en CADA vuelta:
+       if (dht_tarea()) {              // terminó una lectura
+           uint8_t t, h;
+           if (dht_resultado(&t, &h) == DHT_OK) {
+               // t = temperatura en °C, h = humedad en %
+           } else {
+               // error: t y h siguen con los últimos valores válidos
+           }
+       }
+
+FUNCIONES
+- dht_init()              Pin en entrada con pull-up, Timer2 detenido.
+- dht_iniciar_lectura()   Baja la línea. Devuelve 0 si ya hay una
+                          lectura en curso o si no pasó 1 s desde la
+                          anterior (mínimo de la hoja de datos).
+- dht_tarea()             Termina la lectura cuando pasaron los 20 ms.
+                          Devuelve 1 cuando hay resultado nuevo.
+- dht_resultado(&t, &h)   Últimos valores válidos y código:
+                            DHT_OK (0)            lectura correcta
+                            DHT_ERR_RESPUESTA (1) el sensor no respondió
+                            DHT_ERR_TIMEOUT (2)   se cortó a mitad de los bits
+                            DHT_ERR_CHECKSUM (3)  datos corruptos
+                            DHT_SIN_DATO (4)      todavía no se leyó
+- dht_ocupado()           1 si hay una lectura en curso.
+
+ESTADOS DE LA FSM
+- Antes de leer en un estado donde Timer2 estaba apagado por PRR:
+  energia_prr_encender(PRR_TIM2).
+- Fuera de la lectura se puede apagar con energia_prr_apagar(PRR_TIM2)
+  (comprobar antes que dht_ocupado() == 0).
+- En Power-Down, para la lectura rápida tras el WDT: encender
+  Timer0/Timer1 si hacen falta para millis(), o leer otro sensor más
+  simple (ej. el ADC) como hace la prueba del WDT.
+
+CUIDADOS
+- No pedir lecturas más seguido que cada 1 s (el sensor no responde).
+- El DHT11 entrega solo valores enteros (sin decimales).
+- Si en Proteus siempre da DHT_ERR_RESPUESTA: revisar que el reloj
+  del micro esté en 16 MHz y CKDIV8 sin programar (si el micro corre
+  más lento, los tiempos en us no coinciden).

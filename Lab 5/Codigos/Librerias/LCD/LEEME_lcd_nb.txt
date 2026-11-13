@@ -1,0 +1,66 @@
+==========================================================
+ LIBRERÍA lcd_nb.c / lcd_nb.h
+ LCD 16x2 I2C (PCF8574) sin bloqueo
+==========================================================
+
+QUÉ HACE
+- El programa escribe en una copia de la pantalla en RAM
+  (instantáneo, no usa el bus I2C).
+- lcd_nb_tarea(), llamada en cada vuelta del lazo, manda a la LCD
+  como máximo 4 caracteres por vez. Un refresco completo se reparte
+  en 9 llamadas, y ninguna bloquea más de ~1,5 ms.
+- Usa por dentro la librería de la cátedra (twi_lcd.h).
+
+CÓMO AGREGARLA
+- Copiar a la carpeta del proyecto: twi.h, twi.c y twi_lcd.h de la
+  cátedra, más lcd_nb.c y lcd_nb.h.
+- Agregar al proyecto: lcd_nb.c, lcd_nb.h, twi.h, twi_lcd.h.
+- twi.c NO se agrega (twi_lcd.h ya lo incluye). Si quedó agregado:
+  clic derecho -> Properties -> Build Action: None.
+- No hacer #include "twi_lcd.h" en ningún otro archivo.
+- Dirección: LCD_DIR en lcd_nb.h
+      0x20 en Proteus (PCF8574 con A0-A2 a GND)
+      0x27 en el módulo real (0x3F si el chip es PCF8574A)
+- Pines: SDA = A4 (PC4), SCL = A5 (PC5).
+
+USO BÁSICO
+       lcd_nb_init();                      // al arrancar (bloquea ~1 s)
+       ...
+       // en una tarea del planificador (ej. cada 500 ms):
+       lcd_nb_linea(0, "Estado: ACTIVO");
+       lcd_nb_linea(1, "ADC:");
+       lcd_nb_numero(1, 5, adc_ultimo(), 4);
+
+       // en el lazo principal, en CADA vuelta:
+       lcd_nb_tarea();
+
+FUNCIONES
+- lcd_nb_init()                  Inicia TWI y LCD (solo al arrancar).
+- lcd_nb_linea(fila, "txt")      Fila completa (0 o 1), rellena con
+                                 espacios lo que sobra.
+- lcd_nb_texto(fila, col, "txt") Texto desde una columna, sin borrar
+                                 el resto de la fila.
+- lcd_nb_numero(fila, col, v, ancho)  Número alineado a la derecha,
+                                 de 1 a 5 dígitos de ancho.
+- lcd_nb_limpiar()               Toda la pantalla en blanco.
+- lcd_nb_tarea()                 Envía lo pendiente de a 4 caracteres.
+- lcd_nb_ocupado()               1 si queda algo sin mostrar.
+- lcd_nb_backlight(0/1)          0: apaga la luz y deja de usar el bus.
+                                 1: la prende y refresca la pantalla.
+
+ESTADOS DE LA FSM
+- STANDBY:  lcd_nb_linea(0, "Esperando..."); lcd_nb_linea(1, "");
+- APAGADO:  lcd_nb_backlight(0);  y después  energia_prr_apagar(PRR_TWI);
+- Volver:   energia_prr_encender(PRR_TWI);  y después  lcd_nb_backlight(1);
+
+CUIDADOS
+- Escribir en el buffer solo desde tareas periódicas (ej. 500 ms),
+  no en cada vuelta del lazo: si el buffer cambia todo el tiempo,
+  la LCD se refresca sin parar.
+- No usar el comando clear de la LCD: tarda 1,52 ms y la librería
+  de la cátedra no lo espera. lcd_nb_linea() ya rellena con espacios.
+- Si la LCD no responde (desconectada), twi.c de la cátedra se queda
+  esperando para siempre: es un bloqueo real que el WDT en modo
+  reset puede recuperar (sirve para demostrar la Prueba B).
+- lcd_nb_init() corrige el bug de twi_init() (que pone A0/A1 como
+  salidas) sin modificar la librería de la cátedra.
