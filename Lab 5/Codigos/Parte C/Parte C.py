@@ -1,14 +1,14 @@
-# 2.... Gráfica en vivo, hilo lector, registro en CSV y marcado de estados con el teclado
+# 3.... Resumen por estado, carga integrada, guardado final y aviso de saturación del ADC
 """
 LABORATORIO 5 - PROBLEMA C
 Recibe muestras de un segundo Arduino, calcula corriente, dibuja una grafica
-en vivo y guarda cada muestra en un CSV, marcando el estado con el teclado.
+en vivo y guarda los resultados para el informe.
 Teclas dentro de la ventana de la grafica:
     1 -> ACTIVO
     2 -> STANDBY
     3 -> APAGADO
     4 -> EMERGENCIA
-    Q -> terminar y guardar el CSV
+    Q -> terminar y guardar
 """
 from __future__ import annotations                      # Permite usar anotaciones de tipos modernas (tuple[int, int] | None) sin errores
 import csv                                              # Escritura de los archivos CSV
@@ -45,6 +45,9 @@ R_SHUNT_OHM = 4.7                                       # Valor de la shunt en o
 
 # Ganancia del amplificador no inversor: G = 1 + Rf/Rg = 1 + 1k/1k = 2.
 GANANCIA = 2.0                                          # Ganancia del LM358
+
+# Tension que alimenta el sistema medido (fuente de banco).
+TENSION_ALIMENTACION_V = 5.0                            # Se usa para calcular potencia y energía
 
 # Duracion de la calibracion inicial del offset.
 CALIBRACION_S = 3.0                                     # Segundos que se promedia para calibrar
@@ -113,11 +116,64 @@ def calibrar_offset(ser: serial.Serial) -> float:       # Mide el offset del amp
     return offset                                       # Devuelve el offset para restarlo después
 
 
-def crear_archivos() -> Path:                           # Devuelve la ruta del CSV de datos
-    marca = datetime.now().strftime("%Y%m%d_%H%M%S")    # Fecha y hora actuales, usadas en el nombre
+def crear_archivos() -> tuple[Path, Path, Path]:        # Devuelve las rutas de CSV, resumen y gráfica
+    marca = datetime.now().strftime("%Y%m%d_%H%M%S")    # Fecha y hora actuales, usadas en los nombres
     carpeta = Path(__file__).resolve().parent / "mediciones"  # Carpeta "mediciones" junto al script
     carpeta.mkdir(parents=True, exist_ok=True)          # La crea si no existe
-    return carpeta / f"medicion_{marca}.csv"            # Datos muestra por muestra
+    return (                                            # Devuelve las tres rutas
+        carpeta / f"medicion_{marca}.csv",              # Datos muestra por muestra
+        carpeta / f"resumen_{marca}.csv",               # Estadísticas por estado
+        carpeta / f"grafica_{marca}.png",               # Imagen de la gráfica
+    )
+
+
+def calcular_resumen(                                   # Calcula las estadísticas por estado
+    tiempos: list[float],                               # Lista de tiempos (s)
+    corrientes: list[float],                            # Lista de corrientes (mA)
+    estados: list[str],                                 # Estado asignado a cada muestra
+) -> list[dict[str, float | int | str]]:                # Devuelve una lista de diccionarios, uno por estado
+    """Calcula estadisticas y carga integrada para cada estado."""
+    nombres = ["TOTAL", "ACTIVO", "STANDBY", "APAGADO", "EMERGENCIA"]  # Filas del resumen
+    resumen = []                                        # Resultado acumulado
+    for nombre in nombres:                              # Procesa cada estado
+        if nombre == "TOTAL":                           # Para el total...
+            indices = list(range(len(tiempos)))         # ...se usan todas las muestras
+        else:                                           # Para un estado concreto...
+            indices = [i for i, estado in enumerate(estados) if estado == nombre]  # ...solo las muestras con ese estado
+        if not indices:                                 # Si ese estado nunca apareció...
+            continue                                    # ...se omite
+        valores = [corrientes[i] for i in indices]      # Corrientes de esas muestras
+        duracion = 0.0                                  # Duración acumulada (s)
+        carga_mAh = 0.0                                 # Carga acumulada (mAh)
+        for i in range(1, len(tiempos)):                # Recorre los intervalos entre muestras consecutivas
+            mismo_estado = (                            # El intervalo cuenta si ambas muestras son del estado
+                nombre == "TOTAL"                       # (el total cuenta todos los intervalos)
+                or (estados[i - 1] == nombre and estados[i] == nombre)  # o ambas muestras del estado
+            )
+            if not mismo_estado:                        # Si el intervalo cruza dos estados...
+                continue                                # ...no se cuenta
+            dt_s = tiempos[i] - tiempos[i - 1]          # Duración del intervalo (s)
+            if dt_s <= 0.0 or dt_s > 1.0:               # Se descartan tiempos no válidos o saltos de más de 1 s
+                continue                                # Pasa al siguiente intervalo
+            corriente_media_intervalo = (corrientes[i - 1] + corrientes[i]) / 2.0  # Promedio de las dos muestras (regla del trapecio)
+            carga_mAh += corriente_media_intervalo * dt_s / 3600.0  # mA * s / 3600 = mAh
+            duracion += dt_s                            # Suma la duración del intervalo
+        corriente_media = statistics.fmean(valores)     # Corriente promedio del estado
+        resumen.append(                                 # Agrega la fila al resumen
+            {
+                "estado": nombre,                       # Nombre del estado
+                "muestras": len(valores),               # Cantidad de muestras
+                "duracion_s": duracion,                 # Duración integrada (s)
+                "corriente_min_mA": min(valores),       # Corriente mínima
+                "corriente_max_mA": max(valores),       # Corriente máxima
+                "corriente_media_mA": corriente_media,  # Corriente promedio
+                "desviacion_mA": statistics.pstdev(valores),  # Desviación estándar
+                "carga_mAh": carga_mAh,                 # Carga consumida
+                "potencia_media_mW": TENSION_ALIMENTACION_V * corriente_media,  # P = V * I (V en V, I en mA -> mW)
+                "energia_mWh": TENSION_ALIMENTACION_V * carga_mAh,  # E = V * Q (mWh)
+            }
+        )
+    return resumen                                      # Devuelve todas las filas
 
 
 def main() -> None:                                     # Programa principal
@@ -128,7 +184,7 @@ def main() -> None:                                     # Programa principal
     ser.reset_input_buffer()                            # Descarta lo que haya llegado durante el reinicio
     offset_v = calibrar_offset(ser)                     # Calibra el offset del amplificador
 
-    archivo_csv = crear_archivos()                      # Ruta del CSV de salida
+    archivo_csv, archivo_resumen, archivo_png = crear_archivos()  # Rutas de salida
     print(f"\nCSV: {archivo_csv}")                      # Muestra dónde se guardará el CSV
     print("Teclas: 1=ACTIVO, 2=STANDBY, 3=APAGADO, 4=EMERGENCIA, Q=salir")  # Recordatorio de teclas
 
@@ -308,12 +364,16 @@ def main() -> None:                                     # Programa principal
 
         media_corta = float(np.mean(corriente[-min(200, len(corriente)) :]))  # Promedio de las últimas 200 muestras = 1 s
         voltaje_a0_actual = todos_adc[-1] * VREF_ADC_V / 1023.0  # Tensión actual en A0
+        aviso = ""                                      # Texto de advertencia (vacío por defecto)
+        if voltaje_a0_actual >= 4.75:                   # Si A0 está cerca de los 5 V...
+            aviso = "\nADVERTENCIA: A0 cerca de 5 V"    # ...avisa: el amplificador puede estar saturando
         texto_info.set_text(                            # Actualiza el recuadro de información
             f"Estado: {estado_actual}\n"                # Estado actual
             f"Corriente: {corriente[-1]:.2f} mA\n"      # Última corriente
             f"Media 1 s: {media_corta:.2f} mA\n"        # Media del último segundo
             f"A0: {voltaje_a0_actual:.3f} V\n"          # Tensión en A0
             f"Offset LM358: {offset_v:.4f} V"           # Offset calibrado
+            f"{aviso}"                                  # Advertencia, si corresponde
         )
 
         if len(todos_tiempos) % 200 == 0:               # Aproximadamente cada 200 muestras...
@@ -342,8 +402,25 @@ def main() -> None:                                     # Programa principal
         if not todos_tiempos:                           # Si no llegó ninguna muestra...
             print("No se guardaron muestras.")          # ...avisa
             return                                      # ...y termina
-        print("\nArchivo guardado:")                    # Aviso de cierre
-        print(f"  Datos:   {archivo_csv}")              # Ruta del CSV de datos
+        resumen = calcular_resumen(todos_tiempos, todas_corrientes, todos_estados)  # Calcula las estadísticas
+        with archivo_resumen.open("w", newline="", encoding="utf-8") as f:  # Abre el CSV del resumen
+            campos = list(resumen[0].keys())            # Nombres de columnas
+            writer = csv.DictWriter(f, fieldnames=campos)  # Escritor basado en diccionarios
+            writer.writeheader()                        # Escribe los encabezados
+            writer.writerows(resumen)                   # Escribe una fila por estado
+        fig.savefig(archivo_png, dpi=180, bbox_inches="tight")  # Guarda la gráfica como imagen
+        print("\nArchivos guardados:")                  # Lista de archivos generados
+        print(f"  Datos:   {archivo_csv}")              # CSV de datos
+        print(f"  Resumen: {archivo_resumen}")          # CSV de resumen
+        print(f"  Grafica: {archivo_png}")              # Imagen
+        print("\nResumen:")                             # Resumen en consola
+        for fila in resumen:                            # Una línea por estado
+            print(
+                f"  {fila['estado']:<10} "              # Nombre alineado a 10 caracteres
+                f"media={fila['corriente_media_mA']:.2f} mA, "  # Corriente media
+                f"min={fila['corriente_min_mA']:.2f} mA, "      # Corriente mínima
+                f"max={fila['corriente_max_mA']:.2f} mA"        # Corriente máxima
+            )
 
     fig.canvas.mpl_connect("close_event", lambda _event: finalizar())  # Al cerrar la ventana se guarda todo
 
