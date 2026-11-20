@@ -1,0 +1,74 @@
+==========================================================
+ LIBRERÍA tiempo.c / tiempo.h
+ Base de tiempos, ADC periódico y planificador de tareas
+==========================================================
+
+QUÉ HACE
+- Timer0 genera una interrupción cada 1 ms -> millis() devuelve
+  los milisegundos desde el arranque.
+- Timer1 genera una interrupción cada 100 ms y en ella pide una
+  conversión al ADC (canal ADC2 = pin A2 / PC2).
+- El ADC avisa por interrupción cuando termina; el valor queda
+  guardado para leerlo desde el programa principal.
+- Un planificador cooperativo ejecuta funciones cada cierto
+  período sin usar _delay_ms() (nada se bloquea).
+
+CÓMO AGREGARLA
+- Agregar tiempo.c y tiempo.h al proyecto (Add -> Existing Item).
+- En main.c: #include "tiempo.h"
+- Recursos que ocupa: Timer0, Timer1, ADC. No usarlos para otra cosa.
+
+USO BÁSICO
+1) Escribir cada tarea como una función corta, sin esperas:
+       void tarea_led(void) { PORTB ^= (1 << PB5); }
+
+2) Armar la tabla de tareas: { período_ms, 0, función, activa }
+       tarea_t tareas[] = {
+           { 200, 0, tarea_led, 1 },
+           { 500, 0, tarea_lcd, 1 },
+       };
+       #define N_TAREAS (sizeof(tareas) / sizeof(tareas[0]))
+
+3) En main():
+       tiempo_init();
+       sei();
+       planificador_reiniciar(tareas, N_TAREAS);
+       while (1) {
+           planificador_ejecutar(tareas, N_TAREAS);
+           // ... otras tareas que se llaman en cada vuelta
+       }
+
+FUNCIONES
+- tiempo_init()              Configura Timer0, Timer1 y ADC.
+- millis()                   ms desde el arranque (uint32_t).
+- adc_nuevo_dato(&v)         1 si llegó una conversión nueva (cada
+                             100 ms) y la copia en v; 0 si no.
+- adc_ultimo()               Último valor del ADC (0 a 1023).
+- adc_habilitar(0/1)         Deja de pedir / vuelve a pedir conversiones.
+- tiempo_base_lenta()        Para STANDBY: apaga la interrupción de
+                             1 ms; el tiempo avanza de a 100 ms con
+                             Timer1 (la CPU despierta 10 veces/s
+                             en lugar de 1000).
+- tiempo_base_rapida()       Vuelve a la base de 1 ms (ACTIVO).
+- tiempo_sumar_ms(ms)        Suma tiempo al reloj; usar al despertar
+                             de Power-Down (los timers estaban
+                             detenidos). Ej.: tiempo_sumar_ms(wdt_periodo_ms());
+- planificador_ejecutar(t,n) Ejecuta las tareas cuyo período venció.
+- planificador_reiniciar(t,n) Todas las tareas cuentan desde "ahora"
+                             (llamar al arrancar y al volver de dormir).
+- Campo .activa de cada tarea: ponerlo en 0 suspende la tarea
+  (útil para cambiar qué corre en cada estado de la FSM).
+
+CUIDADOS
+- Las tareas tienen que ser cortas: si una tarda, atrasa a todas.
+- No usar ADC0/ADC1 (A0/A1): twi_init() de la cátedra los pisa.
+  Para cambiar de canal: TIEMPO_ADC_CANAL en tiempo.h.
+- El LED con tarea de 200 ms da 200 ms prendido + 200 ms apagado
+  (período completo 400 ms). Aclararlo al medir.
+
+REGISTROS (para el informe)
+- Timer0: TCCR0A=0x02 (CTC), TCCR0B=0x03 (N=64), OCR0A=249
+          16 MHz / (64 x 250) = 1 kHz -> 1 ms
+- Timer1: TCCR1B=0x0C (CTC, N=256), OCR1A=6249
+          16 MHz / (256 x 6250) = 10 Hz -> 100 ms
+- ADC:    ADMUX=0x42 (AVcc, canal 2), ADCSRA=0x8F (ADEN, ADIE, N=128)

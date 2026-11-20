@@ -1,0 +1,59 @@
+==========================================================
+ LIBRERÍA uart_rb.c / uart_rb.h
+ USART0 por interrupciones con buffers circulares
+==========================================================
+
+QUÉ HACE
+- Recibe por interrupción: cada byte que llega se guarda en un
+  buffer circular de 64 bytes. El programa lo lee cuando quiere.
+- Transmite por interrupción: uart_send()/uart_print() dejan los
+  bytes en un buffer de 128 y la ISR los va sacando por el pin.
+- Ninguna función espera a la USART: el programa nunca se traba.
+
+CÓMO AGREGARLA
+- Agregar uart_rb.c y uart_rb.h al proyecto.
+- En main.c: #include "uart_rb.h"
+- NO usar al mismo tiempo UART.c de la cátedra (tiene funciones con
+  el mismo nombre: el enlazador da error de símbolos duplicados).
+- Pines: PD0 (RX) y PD1 (TX). Con el HC-05: TXD del módulo a PD0,
+  RXD del módulo a PD1 con divisor resistivo (el HC-05 es de 3,3 V).
+- Desconectar el TX del HC-05 al grabar por USB (comparten pines).
+
+USO BÁSICO
+       uart_init(UART_UBRR(9600));   // UBRR = 103 a 16 MHz
+       sei();
+       uart_print("Hola\r\n");
+
+       uint8_t c;
+       while (uart_leer(&c)) {       // Procesa todo lo recibido
+           // usar c
+       }
+
+FUNCIONES
+- uart_init(ubrr)        8N1, habilita RX, TX e interrupción de RX.
+- uart_leer(&c)          1 si había un byte (lo copia en c); 0 si no.
+- uart_disponible()      Cuántos bytes esperan en el buffer.
+- uart_vaciar_rx()       Descarta todo lo recibido.
+- uart_send(c)           Encola 1 byte. Devuelve 0 si el buffer
+                         está lleno (el byte se descarta, no espera).
+- uart_print("texto")    Encola una cadena.
+- uart_print_u16(n)      Encola un número en decimal (sin sprintf).
+- uart_print_hex(b)      Encola un byte como 2 dígitos hex.
+- uart_tx_libre()        Lugares libres en el buffer de TX.
+- uart_tx_terminado()    1 cuando ya salió TODO, incluido el último
+                         bit. Usar antes de dormir o de apagar.
+- uart_habilitar(0/1)    Apaga / enciende RX y TX.
+- uart_errores()         Contador de errores (byte mal recibido,
+                         byte perdido, buffer lleno).
+
+ANTES DE PASAR A APAGADO (orden obligatorio)
+       while (!uart_tx_terminado());     // que salga el último mensaje
+       uart_habilitar(0);                // apaga RX/TX
+       energia_prr_apagar(PRR_USART0);   // recién ahora quita el reloj
+  Al volver: energia_prr_encender(PRR_USART0); uart_habilitar(1);
+
+CUIDADOS
+- En Power-Down la USART no recibe: un comando Bluetooth NO puede
+  despertar al micro. Para eso está el pulsador (INT0) o el WDT.
+- La ISR de RX solo guarda bytes; el procesamiento (tramas) se hace
+  en el lazo principal, como pide la letra.

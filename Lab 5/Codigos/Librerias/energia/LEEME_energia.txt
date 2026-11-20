@@ -1,0 +1,91 @@
+==========================================================
+ LIBRERÍA energia.c / energia.h
+ Modos sleep, PRR, Watchdog Timer y causa de reset
+==========================================================
+
+CÓMO AGREGARLA
+- Agregar energia.c y energia.h al proyecto.
+- En main.c: #include "energia.h"
+- Al principio de main(): energia_init();  (apaga el comparador
+  analógico y el SPI, que no se usan)
+- No hace falta llamar a nada para la causa de reset ni para
+  apagar el WDT al arrancar: lo hace sola antes de main().
+
+1) MODOS SLEEP
+- energia_dormir(DORMIR_IDLE)
+      CPU detenida; timers, USART, ADC y TWI siguen andando.
+      Despierta con CUALQUIER interrupción. Usar en STANDBY.
+- energia_dormir(DORMIR_ADC)
+      ADC Noise Reduction (para el Problema D).
+- energia_power_down()
+      Oscilador detenido. Solo despiertan: INT0/INT1, PCINT y WDT.
+      Usar en APAGADO. La función se encarga sola de:
+        * pasar INT0/INT1 a "nivel bajo" (en Power-Down los flancos
+          no se detectan) y restaurar el flanco al despertar
+        * apagar el BOD mientras duerme (ahorra ~20 uA)
+
+  STANDBY típico (en el lazo principal):
+       tiempo_base_lenta();           // al entrar a STANDBY
+       ...
+       energia_dormir(DORMIR_IDLE);   // al final de cada vuelta
+
+2) PRR (apagar el reloj de periféricos)
+- energia_prr_apagar(PRR_ADC | PRR_USART0 | ...)
+- energia_prr_encender(PRR_ADC | ...)
+  Máscaras: PRR_ADC, PRR_USART0, PRR_SPI, PRR_TIM0, PRR_TIM1,
+            PRR_TIM2, PRR_TWI  (el bit 4 reservado nunca se toca)
+
+  ORDEN OBLIGATORIO: primero se apaga el periférico, después PRR.
+    ADC:   adc_habilitar(0); ADCSRA &= ~(1 << ADEN); energia_prr_apagar(PRR_ADC);
+    USART: while(!uart_tx_terminado()); uart_habilitar(0); energia_prr_apagar(PRR_USART0);
+    TWI:   lcd_nb_backlight(0); energia_prr_apagar(PRR_TWI);
+  Al volver, al revés: primero energia_prr_encender(), después el periférico.
+  No apagar un timer que todavía usa el planificador.
+
+3) WATCHDOG TIMER
+  Intervalos: WDT_16MS, WDT_250MS, WDT_500MS, WDT_1S, WDT_2S,
+              WDT_4S, WDT_8S (y otros en energia.h)
+- wdt_modo_interrupcion(WDT_8S)  Solo despierta. NUNCA reinicia.
+- wdt_modo_reset(WDT_1S)         Solo reinicia si no se lo alimenta.
+- wdt_modo_combinado(WDT_1S)     1er vencimiento: interrupción;
+                                 2do: reset.
+- wdt_alimentar()                Reinicia la cuenta (llamarlo en el
+                                 lazo principal en modo reset).
+- wdt_apagar()                   Detiene el WDT.
+- wdt_disparo()                  1 si hubo interrupción del WDT
+                                 desde la última consulta.
+- wdt_eventos()                  Total de interrupciones del WDT.
+- wdt_periodo_ms()               Período nominal configurado (ms).
+
+  APAGADO con despertar periódico:
+       wdt_modo_interrupcion(WDT_8S);
+       energia_power_down();               // duerme
+       if (wdt_disparo()) {                // lo despertó el WDT
+           tiempo_sumar_ms(wdt_periodo_ms());
+           // lectura rápida, volver a dormir
+       }
+
+4) CAUSA DEL ÚLTIMO RESET
+       uint8_t c = energia_causa_reset();
+       if (c & RESET_WDT) { /* venimos de un bloqueo: estado seguro */ }
+  Bits: RESET_POR (encendido), RESET_EXT (pin RESET),
+        RESET_BOR (baja tensión), RESET_WDT (watchdog)
+  Funciona aunque el bootloader del Uno borre MCUSR: al activar el
+  modo reset se guarda una "firma" en RAM que sobrevive al reinicio.
+  Limitación: con bootloader, apretar RESET con el WDT armado en
+  modo reset se informa como WDT. En Proteus, al iniciar la
+  simulación la causa sale vacía (Proteus arranca con MCUSR = 0).
+
+5) RELOJ DEL SISTEMA (Problema D, Actividad 5)
+- energia_reloj_div(clock_div_8)   16 MHz / 8 = 2 MHz
+  Opciones: clock_div_1, _2, _8, _64, _128
+  OJO: F_CPU no cambia -> timers, UART (9600) y _delay_ms quedan
+  mal escalados. Es justamente lo que hay que verificar y explicar.
+
+CUIDADOS
+- Power-Save no se puede usar en el Uno: necesita un cristal de
+  32 kHz en TOSC1/TOSC2, pines ocupados por el cristal de 16 MHz.
+- Fusible WDTON en Proteus: Unprogrammed (si no, el WDT queda
+  siempre en modo reset).
+- Compilar con optimización -O1 o -Os (no -O0): las secuencias
+  temporizadas del WDT y del CLKPR necesitan ser rápidas.
