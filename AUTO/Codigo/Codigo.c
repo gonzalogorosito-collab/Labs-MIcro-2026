@@ -12,19 +12,24 @@
 // Timer2           -> tick de 1 ms
 
 #include "UART.h"      // define F_CPU
+#include <avr/interrupt.h>
 #include "pins.h"
 #include "motors.h"
+#include "timer.h"
 
 // ===== CONFIGURACIÓN =====
 #define BAUD         9600
 #define UBRR_VALOR   (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
 #define VEL_INICIAL  5                         // nivel de velocidad al encender (0..9)
 #define GIRO_PCT     70                        // giros al 70 % de la velocidad actual
+#define FAILSAFE_MS  400                       // tiempo máximo sin comandos en movimiento
 
 // ===== ESTADO =====
-static uint8_t nivel           = VEL_INICIAL;  // nivel de velocidad actual (0..9)
-static char    movimiento      = 'P';          // último movimiento: W, A, S, D o P
-static uint8_t esperando_nivel = 0;            // 1 si llegó una 'V' y falta el dígito
+static uint8_t  nivel           = VEL_INICIAL; // nivel de velocidad actual (0..9)
+static char     movimiento      = 'P';         // último movimiento: W, A, S, D o P
+static uint8_t  esperando_nivel = 0;           // 1 si llegó una 'V' y falta el dígito
+static uint8_t  emergencia      = 0;           // 1 si está enclavada la parada de emergencia
+static uint32_t ultimo_cmd      = 0;           // millis() del último comando válido
 
 // ===== FUNCIONES =====
 
@@ -62,12 +67,25 @@ static void eco(char c) {
 
 // Interpreta un carácter recibido
 static void procesar(char c) {
-	// --- (1) Dígito que completa un comando V ---
+	// --- (1) Emergencia enclavada: solo se acepta R ---
+	if (emergencia) {
+		if (c == 'R') {
+			emergencia      = 0;
+			esperando_nivel = 0;
+			movimiento      = 'P';           // queda frenado; el nivel se conserva
+			ultimo_cmd      = millis();
+			eco('R');
+		}
+		return;                              // todo lo demás se ignora en silencio
+	}
+
+	// --- (2) Dígito que completa un comando V ---
 	if (esperando_nivel) {
 		esperando_nivel = 0;
 		if (c >= '0' && c <= '9') {
 			nivel = c - '0';
-			aplicar_movimiento();              // el cambio se aplica en el momento
+			aplicar_movimiento();            // el cambio se aplica en el momento
+			ultimo_cmd = millis();
 			uart_send('V');
 			eco(c);
 			return;
@@ -75,11 +93,12 @@ static void procesar(char c) {
 		// si no es dígito, la V se descarta y c se procesa como comando normal
 	}
 
-	// --- (2) Comandos de un carácter ---
+	// --- (3) Comandos de un carácter ---
 	switch (c) {
 		case 'W': case 'A': case 'S': case 'D': case 'P':
 		movimiento = c;
 		aplicar_movimiento();
+		ultimo_cmd = millis();
 		eco(c);
 		break;
 
@@ -87,22 +106,24 @@ static void procesar(char c) {
 		esperando_nivel = 1;
 		break;
 
-		case 'O': case 'C':                    // pinza: solo con el auto parado
+		case 'O': case 'C':                  // pinza: solo con el auto parado
+		ultimo_cmd = millis();
 		if (movimiento == 'P') {
-			// servo_open() / servo_close() más adelante
+			// servo_open() / servo_close() en la parte 3
 			eco(c);
 			} else {
 			eco('X');
 		}
 		break;
 
-		case 'E':                              // emergencia (enclavamiento próximamente)
+		case 'E':                            // emergencia: frena y enclava
+		emergencia = 1;
 		movimiento = 'P';
 		motors_stop();
 		eco('E');
 		break;
 
-		default:                               // '\r', '\n', espacios y desconocidos
+		default:                             // '\r', '\n', espacios, R sin emergencia y desconocidos
 		break;
 	}
 }
@@ -112,13 +133,22 @@ int main(void) {
 	// --- (1) Inicialización ---
 	motors_init();
 	uart_init(UBRR_VALOR);
-
+	timer_init();
+	sei();                                   // habilita las interrupciones globales (tick de 1 ms)
 
 	// --- (2) Bucle principal ---
 	while (1) {
-		// uart_receive() es bloqueante: solo se llama si ya hay un byte (RXC0 = 1)
+		// --- (2a) Recepción: uart_receive() es bloqueante, solo se llama si hay un byte ---
 		if (UCSR0A & (1 << RXC0)) {
 			procesar(uart_receive());
+		}
+
+		// --- (2b) Failsafe: en movimiento y sin comandos durante FAILSAFE_MS -> frena ---
+		// la resta sin signo da el tiempo correcto aunque millis() desborde
+		if (movimiento != 'P' && (millis() - ultimo_cmd) >= FAILSAFE_MS) {
+			movimiento = 'P';
+			motors_stop();
+			eco('F');
 		}
 	}
 }
