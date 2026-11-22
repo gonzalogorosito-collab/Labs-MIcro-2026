@@ -16,13 +16,16 @@
 #include "pins.h"
 #include "motors.h"
 #include "timer.h"
+#include "servo.h"
 
 // ===== CONFIGURACIÓN =====
-#define BAUD         9600
-#define UBRR_VALOR   (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
-#define VEL_INICIAL  5                         // nivel de velocidad al encender (0..9)
-#define GIRO_PCT     70                        // giros al 70 % de la velocidad actual
-#define FAILSAFE_MS  400                       // tiempo máximo sin comandos en movimiento
+#define BAUD           9600
+#define UBRR_VALOR     (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
+#define VEL_INICIAL    5                         // nivel de velocidad al encender (0..9)
+#define GIRO_PCT       70                        // giros al 70 % de la velocidad actual
+#define FAILSAFE_MS    400                       // tiempo máximo sin comandos en movimiento
+#define CALIBRAR_SERVO 1                         // 1: habilita los comandos + y - (calibración)
+#define PASO_CAL_US    50                        // paso de calibración del servo
 
 // ===== ESTADO =====
 static uint8_t  nivel           = VEL_INICIAL; // nivel de velocidad actual (0..9)
@@ -65,6 +68,26 @@ static void eco(char c) {
 	uart_send('\n');
 }
 
+#if CALIBRAR_SERVO
+// Envía un número en decimal seguido de '\n'
+static void enviar_numero(uint16_t n) {
+	char buf[5];                             // uint16_t tiene hasta 5 dígitos (65535)
+	uint8_t i = 0;
+
+	// --- (1) Extrae los dígitos de menor a mayor peso (n % 10 = último dígito) ---
+	do {
+		buf[i++] = '0' + (n % 10);
+		n /= 10;
+	} while (n > 0);
+
+	// --- (2) Los envía en orden inverso (de mayor a menor peso) ---
+	while (i > 0) {
+		uart_send(buf[--i]);
+	}
+	uart_send('\n');
+}
+#endif
+
 // Interpreta un carácter recibido
 static void procesar(char c) {
 	// --- (1) Emergencia enclavada: solo se acepta R ---
@@ -96,9 +119,13 @@ static void procesar(char c) {
 	// --- (3) Comandos de un carácter ---
 	switch (c) {
 		case 'W': case 'A': case 'S': case 'D': case 'P':
+		ultimo_cmd = millis();
+		if (c != 'P' && servo_moving()) {  // la pinza termina su barrido antes de arrancar
+			eco('X');
+			break;
+		}
 		movimiento = c;
 		aplicar_movimiento();
-		ultimo_cmd = millis();
 		eco(c);
 		break;
 
@@ -109,17 +136,32 @@ static void procesar(char c) {
 		case 'O': case 'C':                  // pinza: solo con el auto parado
 		ultimo_cmd = millis();
 		if (movimiento == 'P') {
-			// servo_open() / servo_close() en la parte 3
+			if (c == 'O') servo_open();
+			else          servo_close();
 			eco(c);
 			} else {
 			eco('X');
 		}
 		break;
 
-		case 'E':                            // emergencia: frena y enclava
+		#if CALIBRAR_SERVO
+		case '+': case '-':                  // calibración: mueve la pinza de a PASO_CAL_US
+		ultimo_cmd = millis();
+		if (movimiento == 'P') {
+			if (c == '+') servo_set_us(servo_get_us() + PASO_CAL_US);
+			else          servo_set_us(servo_get_us() - PASO_CAL_US);
+			enviar_numero(servo_get_us());
+			} else {
+			eco('X');
+		}
+		break;
+		#endif
+
+		case 'E':                            // emergencia: frena, congela la pinza y enclava
 		emergencia = 1;
 		movimiento = 'P';
 		motors_stop();
+		servo_hold();
 		eco('E');
 		break;
 
@@ -132,6 +174,7 @@ static void procesar(char c) {
 int main(void) {
 	// --- (1) Inicialización ---
 	motors_init();
+	servo_init();
 	uart_init(UBRR_VALOR);
 	timer_init();
 	sei();                                   // habilita las interrupciones globales (tick de 1 ms)
@@ -150,5 +193,8 @@ int main(void) {
 			motors_stop();
 			eco('F');
 		}
+
+		// --- (2c) Barrido suave de la pinza ---
+		servo_update();
 	}
 }
