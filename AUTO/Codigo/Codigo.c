@@ -7,8 +7,8 @@
 // D12    (PB4)     -> IN3 (motor derecho)
 // D13    (PB5)     -> IN4 (motor derecho)
 // D9     (PB1/OC1A)-> servo SG90 (Timer1)
-// D4     (PD4)     -> sensor IR al piso
-// A1     (ADC1)    -> lectura de batería
+// D4     (PD4)     -> OUT del sensor IR de borde (TCRT5000)
+// A1     (ADC1)    -> batería 2S por divisor 10 kΩ / 10 kΩ
 // Timer2           -> tick de 1 ms
 
 #include "UART.h"      // define F_CPU
@@ -18,12 +18,13 @@
 #include "motors.h"
 #include "timer.h"
 #include "servo.h"
+#include "ir.h"
+#include "battery.h"
 
 // ===== CONFIGURACIÓN =====
 #define BAUD           9600
 #define UBRR_VALOR     (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
 #define FAILSAFE_MS    300                       // tiempo máximo sin tramas en movimiento
-#define ECO_BYTE       0x55                      // respuesta a cada trama válida (latencia)
 #define CALIBRAR_SERVO 1                         // 1: habilita PINZA con D1 = 2 (+) y D1 = 3 (−)
 #define PASO_CAL_US    50                        // paso de calibración del servo
 
@@ -46,6 +47,14 @@ static int16_t escalar(int16_t x) {
 	return (int16_t)((int32_t)x * 255 / 100);
 }
 
+// Frena, congela la pinza y enclava la emergencia (desde la app o desde el IR)
+static void activar_emergencia(void) {
+	emergencia = 1;
+	motors_stop();
+	servo_hold();
+	parado = 1;
+}
+
 // Mezcla diferencial: v > 0 avanza, v < 0 retrocede; w > 0 gira a la izquierda, w < 0 a la derecha
 static void mover(int16_t v, int16_t w) {
 	// --- (1) Orden de quieto ---
@@ -65,6 +74,15 @@ static void mover(int16_t v, int16_t w) {
 	// --- (3) Aplica la mezcla a los motores ---
 	motors_set(limitar(escalar(v - w)), limitar(escalar(v + w)));
 	parado = 0;
+}
+
+// Arma el byte de estado de la telemetría
+static uint8_t estado_robot(void) {
+	uint8_t e = 0;
+	if (emergencia)                          e |= EST_EMERG;
+	if (ir_detecta())                        e |= EST_IR;
+	if (servo_get_us() == SERVO_CERRADO_US)  e |= EST_PINZA;
+	return e;
 }
 
 #if CALIBRAR_SERVO
@@ -100,13 +118,8 @@ static void procesar(const trama_t *t) {
 
 	// --- (2) Comandos ---
 	switch (t->cmd) {
-		case CMD_EMERG:                      // emergencia: frena, congela la pinza y enclava
-		if (t->d1 == 1) {
-			emergencia = 1;
-			motors_stop();
-			servo_hold();
-			parado = 1;
-		}
+		case CMD_EMERG:                      // emergencia desde la app
+		if (t->d1 == 1) activar_emergencia();
 		break;
 
 		case CMD_MOVER:                      // movimiento: D1 = v + 100, D2 = w + 100
@@ -138,6 +151,8 @@ int main(void) {
 	motors_init();
 	motors_stop();
 	servo_init();
+	ir_init();
+	battery_init();
 	uart_init(UBRR_VALOR);
 	timer_init();
 	sei();                                   // habilita interrupciones (RX de la UART y tick de 1 ms)
@@ -146,21 +161,32 @@ int main(void) {
 
 	// --- (2) Bucle principal ---
 	while (1) {
-		// --- (2a) Recepción: el parser arma las tramas desde el buffer circular ---
+		uint32_t ahora = millis();
+
+		// --- (2a) Recepción: cada trama válida se ejecuta y se responde con telemetría ---
+		// la respuesta hace de eco para medir la latencia (ningún byte de datos puede valer 0xAA)
 		while (proto_poll(&t)) {
-			uart_send(ECO_BYTE);             // eco apenas llega: mide solo la latencia del enlace
 			ultimo_cmd = millis();
 			procesar(&t);
+			proto_send(CMD_TELEM, battery_pct(), estado_robot());
 		}
 
-		// --- (2b) Failsafe: en movimiento y sin tramas durante FAILSAFE_MS -> frena ---
+		// --- (2b) Sensor IR: el paso de piso a borde enclava la emergencia ---
+		// por flanco: después de rearmar se puede retroceder aunque siga viendo el borde
+		ir_update(ahora);
+		if (ir_flanco() && !emergencia) {
+			activar_emergencia();
+		}
+
+		// --- (2c) Failsafe: en movimiento y sin tramas durante FAILSAFE_MS -> frena ---
 		// la resta sin signo da el tiempo correcto aunque millis() desborde
 		if (!parado && (millis() - ultimo_cmd) >= FAILSAFE_MS) {
 			motors_stop();
 			parado = 1;
 		}
 
-		// --- (2c) Barrido suave de la pinza ---
+		// --- (2d) Batería y barrido suave de la pinza ---
+		battery_update(ahora);
 		servo_update();
 	}
-}	
+}
