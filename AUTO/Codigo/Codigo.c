@@ -1,5 +1,5 @@
 // ===== MAPEO DE PINES =====
-// D0/D1  (PD0/PD1) -> USART: RX/TX del HC-06, 9600 baud
+// D0/D1  (PD0/PD1) -> USART: RX/TX del HC-05, 9600 baud
 // D6     (PD6/OC0A)-> ENA (PWM motor izquierdo, Timer0)
 // D5     (PD5/OC0B)-> ENB (PWM motor derecho, Timer0)
 // D7     (PD7)     -> IN1 (motor izquierdo)
@@ -14,6 +14,7 @@
 #include "UART.h"      // define F_CPU
 #include <avr/interrupt.h>
 #include "pins.h"
+#include "protocol.h"
 #include "motors.h"
 #include "timer.h"
 #include "servo.h"
@@ -21,51 +22,49 @@
 // ===== CONFIGURACIÓN =====
 #define BAUD           9600
 #define UBRR_VALOR     (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
-#define VEL_INICIAL    5                         // nivel de velocidad al encender (0..9)
-#define GIRO_PCT       70                        // giros al 70 % de la velocidad actual
-#define FAILSAFE_MS    400                       // tiempo máximo sin comandos en movimiento
-#define CALIBRAR_SERVO 1                         // 1: habilita los comandos + y - (calibración)
+#define FAILSAFE_MS    300                       // tiempo máximo sin tramas en movimiento
+#define ECO_BYTE       0x55                      // respuesta a cada trama válida (latencia)
+#define CALIBRAR_SERVO 1                         // 1: habilita PINZA con D1 = 2 (+) y D1 = 3 (−)
 #define PASO_CAL_US    50                        // paso de calibración del servo
 
 // ===== ESTADO =====
-static uint8_t  nivel           = VEL_INICIAL; // nivel de velocidad actual (0..9)
-static char     movimiento      = 'P';         // último movimiento: W, A, S, D o P
-static uint8_t  esperando_nivel = 0;           // 1 si llegó una 'V' y falta el dígito
-static uint8_t  emergencia      = 0;           // 1 si está enclavada la parada de emergencia
-static uint32_t ultimo_cmd      = 0;           // millis() del último comando válido
+static uint8_t  emergencia = 0;    // 1 si está enclavada la parada de emergencia
+static uint8_t  parado     = 1;    // 1 si los motores están frenados (habilita la pinza)
+static uint32_t ultimo_cmd = 0;    // millis() de la última trama válida
 
 // ===== FUNCIONES =====
 
-// Duty para un nivel: PWM_MIN + n*(255-PWM_MIN)/9  ->  V0 = PWM_MIN, V9 = 255
-static uint8_t duty_de_nivel(uint8_t n) {
-	return PWM_MIN + (uint16_t)n * (255 - PWM_MIN) / 9;
+// Limita un valor al rango de motors_set()
+static int16_t limitar(int16_t x) {
+	if (x >  255) return  255;
+	if (x < -255) return -255;
+	return x;
 }
 
-// Duty de giro: 70 % del duty actual, nunca menos que PWM_MIN
-static uint8_t duty_giro(void) {
-	uint8_t d = (uint16_t)duty_de_nivel(nivel) * GIRO_PCT / 100;
-	if (d < PWM_MIN) d = PWM_MIN;
-	return d;
+// Escala −100..+100 a −255..+255
+static int16_t escalar(int16_t x) {
+	return (int16_t)((int32_t)x * 255 / 100);
 }
 
-// Aplica a los motores el movimiento guardado con el nivel actual
-static void aplicar_movimiento(void) {
-	int16_t d = duty_de_nivel(nivel);
-	int16_t g = duty_giro();
-
-	switch (movimiento) {
-		case 'W': motors_set( d,  d); break;   // adelante
-		case 'S': motors_set(-d, -d); break;   // atrás
-		case 'A': motors_set(-g,  g); break;   // gira a la izquierda en el lugar
-		case 'D': motors_set( g, -g); break;   // gira a la derecha en el lugar
-		default:  motors_stop();      break;   // P
+// Mezcla diferencial: v > 0 avanza, v < 0 retrocede; w > 0 gira a la izquierda, w < 0 a la derecha
+static void mover(int16_t v, int16_t w) {
+	// --- (1) Orden de quieto ---
+	if (v == 0 && w == 0) {
+		motors_stop();
+		parado = 1;
+		return;
 	}
-}
 
-// Envía un carácter seguido de '\n'
-static void eco(char c) {
-	uart_send(c);
-	uart_send('\n');
+	// --- (2) La pinza termina su barrido antes de arrancar ---
+	if (servo_moving()) {
+		motors_stop();
+		parado = 1;
+		return;                              // la próxima trama MOVER (50 ms) arranca sola
+	}
+
+	// --- (3) Aplica la mezcla a los motores ---
+	motors_set(limitar(escalar(v - w)), limitar(escalar(v + w)));
+	parado = 0;
 }
 
 #if CALIBRAR_SERVO
@@ -88,84 +87,47 @@ static void enviar_numero(uint16_t n) {
 }
 #endif
 
-// Interpreta un carácter recibido
-static void procesar(char c) {
-	// --- (1) Emergencia enclavada: solo se acepta R ---
+// Ejecuta una trama válida
+static void procesar(const trama_t *t) {
+	// --- (1) Emergencia enclavada: solo se acepta el rearme ---
 	if (emergencia) {
-		if (c == 'R') {
-			emergencia      = 0;
-			esperando_nivel = 0;
-			movimiento      = 'P';           // queda frenado; el nivel se conserva
-			ultimo_cmd      = millis();
-			eco('R');
+		if (t->cmd == CMD_EMERG && t->d1 == 0) {
+			emergencia = 0;                  // queda frenado hasta el próximo MOVER
+			parado     = 1;
 		}
-		return;                              // todo lo demás se ignora en silencio
+		return;
 	}
 
-	// --- (2) Dígito que completa un comando V ---
-	if (esperando_nivel) {
-		esperando_nivel = 0;
-		if (c >= '0' && c <= '9') {
-			nivel = c - '0';
-			aplicar_movimiento();            // el cambio se aplica en el momento
-			ultimo_cmd = millis();
-			uart_send('V');
-			eco(c);
-			return;
-		}
-		// si no es dígito, la V se descarta y c se procesa como comando normal
-	}
-
-	// --- (3) Comandos de un carácter ---
-	switch (c) {
-		case 'W': case 'A': case 'S': case 'D': case 'P':
-		ultimo_cmd = millis();
-		if (c != 'P' && servo_moving()) {  // la pinza termina su barrido antes de arrancar
-			eco('X');
-			break;
-		}
-		movimiento = c;
-		aplicar_movimiento();
-		eco(c);
-		break;
-
-		case 'V':
-		esperando_nivel = 1;
-		break;
-
-		case 'O': case 'C':                  // pinza: solo con el auto parado
-		ultimo_cmd = millis();
-		if (movimiento == 'P') {
-			if (c == 'O') servo_open();
-			else          servo_close();
-			eco(c);
-			} else {
-			eco('X');
+	// --- (2) Comandos ---
+	switch (t->cmd) {
+		case CMD_EMERG:                      // emergencia: frena, congela la pinza y enclava
+		if (t->d1 == 1) {
+			emergencia = 1;
+			motors_stop();
+			servo_hold();
+			parado = 1;
 		}
 		break;
 
-		#if CALIBRAR_SERVO
-		case '+': case '-':                  // calibración: mueve la pinza de a PASO_CAL_US
-		ultimo_cmd = millis();
-		if (movimiento == 'P') {
-			if (c == '+') servo_set_us(servo_get_us() + PASO_CAL_US);
-			else          servo_set_us(servo_get_us() - PASO_CAL_US);
-			enviar_numero(servo_get_us());
-			} else {
-			eco('X');
+		case CMD_MOVER:                      // movimiento: D1 = v + 100, D2 = w + 100
+		mover((int16_t)t->d1 - 100, (int16_t)t->d2 - 100);
+		break;
+
+		case CMD_PINZA:                      // pinza: solo con el auto parado
+		if (!parado) break;
+		switch (t->d1) {
+			case 0: servo_open();  break;
+			case 1: servo_close(); break;
+			#if CALIBRAR_SERVO
+			case 2: servo_set_us(servo_get_us() + PASO_CAL_US); enviar_numero(servo_get_us()); break;
+			case 3: servo_set_us(servo_get_us() - PASO_CAL_US); enviar_numero(servo_get_us()); break;
+			#endif
+			default: break;
 		}
 		break;
-		#endif
 
-		case 'E':                            // emergencia: frena, congela la pinza y enclava
-		emergencia = 1;
-		movimiento = 'P';
-		motors_stop();
-		servo_hold();
-		eco('E');
-		break;
-
-		default:                             // '\r', '\n', espacios, R sin emergencia y desconocidos
+		case CMD_MODO:                       // no se usa: la velocidad la da el deslizador
+		default:
 		break;
 	}
 }
@@ -174,27 +136,31 @@ static void procesar(char c) {
 int main(void) {
 	// --- (1) Inicialización ---
 	motors_init();
+	motors_stop();
 	servo_init();
 	uart_init(UBRR_VALOR);
 	timer_init();
-	sei();                                   // habilita las interrupciones globales (tick de 1 ms)
+	sei();                                   // habilita interrupciones (RX de la UART y tick de 1 ms)
+
+	trama_t t;
 
 	// --- (2) Bucle principal ---
 	while (1) {
-		// --- (2a) Recepción: uart_receive() es bloqueante, solo se llama si hay un byte ---
-		if (UCSR0A & (1 << RXC0)) {
-			procesar(uart_receive());
+		// --- (2a) Recepción: el parser arma las tramas desde el buffer circular ---
+		while (proto_poll(&t)) {
+			uart_send(ECO_BYTE);             // eco apenas llega: mide solo la latencia del enlace
+			ultimo_cmd = millis();
+			procesar(&t);
 		}
 
-		// --- (2b) Failsafe: en movimiento y sin comandos durante FAILSAFE_MS -> frena ---
+		// --- (2b) Failsafe: en movimiento y sin tramas durante FAILSAFE_MS -> frena ---
 		// la resta sin signo da el tiempo correcto aunque millis() desborde
-		if (movimiento != 'P' && (millis() - ultimo_cmd) >= FAILSAFE_MS) {
-			movimiento = 'P';
+		if (!parado && (millis() - ultimo_cmd) >= FAILSAFE_MS) {
 			motors_stop();
-			eco('F');
+			parado = 1;
 		}
 
 		// --- (2c) Barrido suave de la pinza ---
 		servo_update();
 	}
-}
+}	
