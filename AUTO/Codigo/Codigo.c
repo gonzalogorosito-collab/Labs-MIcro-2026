@@ -8,7 +8,7 @@
 // D13    (PB5)     -> IN4 (motor derecho)
 // D9     (PB1/OC1A)-> servo SG90 (Timer1)
 // D4     (PD4)     -> OUT del sensor IR de borde (TCRT5000)
-// A1     (ADC1)    -> batería 2S por divisor 10 kΩ / 10 kΩ
+// A1     (ADC1)    -> batería 2S por divisor 10 k? / 10 k?
 // Timer2           -> tick de 1 ms
 
 #include "UART.h"      // define F_CPU
@@ -25,8 +25,6 @@
 #define BAUD           9600
 #define UBRR_VALOR     (F_CPU / 16 / BAUD - 1)   // 103 para 9600 baud a 16 MHz
 #define FAILSAFE_MS    300                       // tiempo máximo sin tramas en movimiento
-#define CALIBRAR_SERVO 1                         // 1: habilita PINZA con D1 = 2 (+) y D1 = 3 (−)
-#define PASO_CAL_US    50                        // paso de calibración del servo
 
 // ===== ESTADO =====
 static uint8_t  emergencia = 0;    // 1 si está enclavada la parada de emergencia
@@ -42,16 +40,16 @@ static int16_t limitar(int16_t x) {
 	return x;
 }
 
-// Escala −100..+100 a −255..+255
+// Escala ?100..+100 a ?255..+255
 static int16_t escalar(int16_t x) {
 	return (int16_t)((int32_t)x * 255 / 100);
 }
 
-// Frena, congela la pinza y enclava la emergencia (desde la app o desde el IR)
+// Frena, detiene la pinza y enclava la emergencia (desde la app o desde el IR)
 static void activar_emergencia(void) {
 	emergencia = 1;
 	motors_stop();
-	servo_hold();
+	servo_stop();
 	parado = 1;
 }
 
@@ -64,12 +62,8 @@ static void mover(int16_t v, int16_t w) {
 		return;
 	}
 
-	// --- (2) La pinza termina su barrido antes de arrancar ---
-	if (servo_moving()) {
-		motors_stop();
-		parado = 1;
-		return;                              // la próxima trama MOVER (50 ms) arranca sola
-	}
+	// --- (2) La pinza y el auto no se mueven a la vez ---
+	servo_stop();
 
 	// --- (3) Aplica la mezcla a los motores ---
 	motors_set(limitar(escalar(v - w)), limitar(escalar(v + w)));
@@ -79,13 +73,13 @@ static void mover(int16_t v, int16_t w) {
 // Arma el byte de estado de la telemetría
 static uint8_t estado_robot(void) {
 	uint8_t e = 0;
-	if (emergencia)                          e |= EST_EMERG;
-	if (ir_detecta())                        e |= EST_IR;
-	if (servo_get_us() == SERVO_CERRADO_US)  e |= EST_PINZA;
+	if (emergencia)     e |= EST_EMERG;
+	if (ir_detecta())   e |= EST_IR;
+	if (servo_moving()) e |= EST_PINZA;
 	return e;
 }
 
-#if CALIBRAR_SERVO
+#if SERVO_CALIBRAR
 // Envía un número en decimal seguido de '\n'
 static void enviar_numero(uint16_t n) {
 	char buf[5];                             // uint16_t tiene hasta 5 dígitos (65535)
@@ -126,17 +120,14 @@ static void procesar(const trama_t *t) {
 		mover((int16_t)t->d1 - 100, (int16_t)t->d2 - 100);
 		break;
 
-		case CMD_PINZA:                      // pinza: solo con el auto parado
-		if (!parado) break;
-		switch (t->d1) {
-			case 0: servo_open();  break;
-			case 1: servo_close(); break;
-			#if CALIBRAR_SERVO
-			case 2: servo_set_us(servo_get_us() + PASO_CAL_US); enviar_numero(servo_get_us()); break;
-			case 3: servo_set_us(servo_get_us() - PASO_CAL_US); enviar_numero(servo_get_us()); break;
-			#endif
-			default: break;
+		case CMD_PINZA:                      // pinza: D1 = 0 abrir / 1 cerrar, D2 = velocidad
+		if (!parado) {                       // solo con el auto parado: primero frena
+			motors_stop();
+			parado = 1;
+			break;
 		}
+		if (t->d1 == 0)      servo_jog(1, t->d2);
+		else if (t->d1 == 1) servo_jog(0, t->d2);
 		break;
 
 		case CMD_MODO:                       // no se usa: la velocidad la da el deslizador
@@ -158,6 +149,9 @@ int main(void) {
 	sei();                                   // habilita interrupciones (RX de la UART y tick de 1 ms)
 
 	trama_t t;
+	#if SERVO_CALIBRAR
+	uint8_t servo_antes = 0;                 // para detectar cuándo se detiene la pinza
+	#endif
 
 	// --- (2) Bucle principal ---
 	while (1) {
@@ -180,13 +174,22 @@ int main(void) {
 
 		// --- (2c) Failsafe: en movimiento y sin tramas durante FAILSAFE_MS -> frena ---
 		// la resta sin signo da el tiempo correcto aunque millis() desborde
+		// (la pinza tiene su propio timeout de SERVO_TIMEOUT_MS)
 		if (!parado && (millis() - ultimo_cmd) >= FAILSAFE_MS) {
 			motors_stop();
 			parado = 1;
 		}
 
-		// --- (2d) Batería y barrido suave de la pinza ---
+		// --- (2d) Batería y movimiento de la pinza ---
 		battery_update(ahora);
 		servo_update();
+
+		// --- (2e) Calibración: al detenerse la pinza envía su posición en µs ---
+		#if SERVO_CALIBRAR
+		if (servo_antes && !servo_moving()) {
+			enviar_numero(servo_get_us());
+		}
+		servo_antes = servo_moving();
+		#endif
 	}
 }
